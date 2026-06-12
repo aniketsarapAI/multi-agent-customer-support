@@ -1,5 +1,6 @@
 import sys
 import os
+import re
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -9,6 +10,112 @@ from app.graph.builder import build_app
 from app.state import State
 from app.stream_events import TokenCollector
 
+
+
+
+def _format_step(log: str) -> str | None:
+    m = re.search(r"✅ classify_question:\s*(\S+)", log)
+    if m:
+        return f"Classified as **{m.group(1).upper()}**"
+
+    m = re.search(r"🔍 retrieve: found (\d+) document", log)
+    if m:
+        return f"Retrieved **{m.group(1)}** documents"
+
+    m = re.search(r"✅ is_relevant:\s*(\d+)/(\d+) relevant", log)
+    if m:
+        return f"**{m.group(1)} of {m.group(2)}** documents relevant"
+
+    if "✅ generate_from_context: done" in log:
+        return "Answer drafted from evidence"
+
+    m = re.search(r"✅ is_sup:\s*(\S+)", log)
+    if m:
+        return f"Support verification: **{m.group(1).upper()}**"
+
+    m = re.search(r"✅ revise_answer: done \(attempt (\d+)\)", log)
+    if m:
+        return f"Answer revised (attempt {m.group(1)})"
+
+    m = re.search(r"✅ is_use:\s*(\S+)\s*[—–-]\s*(.+)", log)
+    if m:
+        return f"Usefulness: **{m.group(1).upper()}** — {m.group(2)}"
+
+    m = re.search(r"✅ rewrite_sql_query:\s*→\s*(.+)", log)
+    if m:
+        return f"Refined SQL query → {m.group(1)[:80]}"
+
+    if "✅ generate_sql: SQL generated" in log:
+        return "SQL query generated"
+
+    m = re.search(r"✅ execute_sql_node:\s*(\d+) row", log)
+    if m:
+        return f"Query returned **{m.group(1)}** rows"
+    if "✅ execute_sql_node: no results" in log:
+        return "Query returned no results"
+
+    if "✅ summarize_sql_result: done" in log:
+        return "SQL results summarized"
+
+    if "✅ synthesise_hybrid: done" in log:
+        return "Hybrid answers merged"
+
+    m = re.search(r"✅ decompose_question:\s*→\s*(\d+) sub-question", log)
+    if m:
+        return f"Question decomposed into **{m.group(1)}** sub-questions"
+
+    if "✅ generate_direct: done" in log:
+        return "Answered directly"
+
+    m = re.search(r"✅ run_rag_sub\((\w+)\): done", log)
+    if m:
+        return f"RAG sub-query **{m.group(1)}** complete"
+
+    m = re.search(r"✅ run_sql_sub\((\w+)\): done", log)
+    if m:
+        return f"SQL sub-query **{m.group(1)}** complete"
+
+    if "⚠️ no_answer_found" in log:
+        return "No relevant documents found"
+
+    if "✅ visualize_sql_result: chart generated" in log:
+        return "Chart generated from results"
+
+    m = re.search(r"❌ execute_sql_node: all \d+ attempts failed", log)
+    if m:
+        return "SQL execution failed after retries"
+
+    if "✅ generate_handoff: done" in log:
+        return "Handoff summary generated"
+
+    m = re.search(r"\s*escalate=(\S+)\s+reason=(\S+)", log)
+    if m:
+        if m.group(1) == "False":
+            return "Escalation check: not required"
+        return f"Escalation required: **{m.group(2).upper()}**"
+
+    # Fallback: show raw completion logs
+    if log.startswith("✅") or log.startswith("⚠️") or log.startswith("❌"):
+        cleaned = re.sub(r"^[✅⚠️❌]\s*", "", log).strip()
+        return cleaned[:100].capitalize()
+
+    return None
+
+
+def _format_timeline(logs: list[str]) -> str:
+    step = 0
+    lines = []
+    for log in logs:
+        formatted = _format_step(log)
+        if formatted is None:
+            continue
+        step += 1
+        lines.append(f"**{step}.** {formatted}")
+    if not lines:
+        return "_waiting..._"
+    return "\n\n".join(lines)
+
+
 st.set_page_config(page_title="Self-RAG MCP", page_icon="🤖")
 st.title("Self-RAG MCP — Company Document & Database Q&A")
 st.caption("Ask about company policies, or query e-commerce data (customers, orders, products, etc.)")
@@ -17,6 +124,14 @@ with st.sidebar:
     if st.button("Talk to a Human"):
         st.session_state.force_escalation = True
         st.rerun()
+    st.divider()
+    st.markdown("**View Mode**")
+    # Demo/developer visibility controls.
+    # Production deployments should default both to False.
+    st.checkbox("Show agent execution trace", value=True, key="show_trace")
+    st.checkbox("Show debug panel", value=False, key="show_debug")
+    if st.session_state.show_trace or st.session_state.show_debug:
+        st.caption("Demo / developer features enabled")
 
 if "app" not in st.session_state:
     with st.spinner("Loading documents and building graph..."):
@@ -30,6 +145,10 @@ if "rag_docs_used" not in st.session_state:
     st.session_state.rag_docs_used = []
 if "sql_queries_executed" not in st.session_state:
     st.session_state.sql_queries_executed = []
+if "show_trace" not in st.session_state:
+    st.session_state.show_trace = True
+if "show_debug" not in st.session_state:
+    st.session_state.show_debug = False
 
 for msg in st.session_state.history:
     with st.chat_message(msg["role"]):
@@ -118,13 +237,15 @@ if prompt := st.chat_input("Ask a question..."):
         try:
             collected_logs: list[str] = []
             final_state = None
+
+            # TokenCollector preserved for future FastAPI/SSE use — not rendered
             collector = TokenCollector()
-            answer_text = ""
-            answer_placeholder = st.empty()
+            debug = {}
 
             with progress_placeholder.container():
-                log_area = st.empty()
-                log_area.markdown("**Thinking process:**\n\n_starting..._")
+                trace_area = st.empty()
+                if st.session_state.show_trace:
+                    trace_area.markdown("**🧠 Agent Execution**\n\n_starting..._")
 
             for output in st.session_state.app.stream(
                 initial_state,
@@ -138,23 +259,17 @@ if prompt := st.chat_input("Ask a question..."):
                         if log not in collected_logs:
                             collected_logs.append(log)
 
-                    log_text = "\n".join(f"- {l}" for l in collected_logs[-12:])
-                    log_area.markdown(f"**Thinking process:**\n\n{log_text}")
+                    if st.session_state.show_trace:
+                        timeline = _format_timeline(collected_logs)
+                        trace_area.markdown(f"**🧠 Agent Execution**\n\n{timeline}")
 
-                # Drain any tokens accumulated since last superstep
+                # Drain tokens (preserved for future SSE) — not used for display
                 while not collector._queue.empty():
-                    token = collector._queue.get_nowait()
-                    answer_text += token
-
-                if answer_text:
-                    answer_placeholder.markdown(answer_text + "▌")
+                    collector._queue.get_nowait()
 
             collector.mark_done()
-
-            # Drain remaining tokens
             while not collector._queue.empty():
-                token = collector._queue.get_nowait()
-                answer_text += token
+                collector._queue.get_nowait()
 
             result = final_state or {}
             query_type = result.get("query_type", "document")
@@ -164,10 +279,16 @@ if prompt := st.chat_input("Ask a question..."):
             else:
                 final_answer = result.get("answer", "No answer found.")
 
-            # Show final answer (prefer accumulated tokens, fall back to state answer)
-            final_display = answer_text or final_answer
-            answer_placeholder.markdown(final_display)
+            # ── Section 1: Final Answer ──
+            placeholder.markdown(final_answer)
 
+            # ── Section 2: Agent Execution timeline (collapsed after completion) ──
+            if st.session_state.show_trace and collected_logs:
+                timeline = _format_timeline(collected_logs)
+                with st.expander("🧠 Agent Execution", expanded=False):
+                    st.markdown(timeline)
+
+            # ── Visualization ──
             viz_spec = result.get("visualization_spec")
             sql_raw = result.get("sql_result", "")
             if viz_spec and sql_raw:
@@ -179,7 +300,7 @@ if prompt := st.chat_input("Ask a question..."):
                 except Exception:
                     pass
 
-            # Escalation banner (normal escalation during graph run)
+            # ── Escalation banner ──
             if result.get("escalated"):
                 st.warning(f"🤝 Escalated to human support — reason: **{result['escalation_reason']}**")
                 summary = result.get("handoff_summary", "")
@@ -187,40 +308,44 @@ if prompt := st.chat_input("Ask a question..."):
                     with st.expander("Handoff summary for agent"):
                         st.markdown(summary)
 
-            debug = {}
+            # ── Section 3: Debug Panel (always collapsed) ──
+            if st.session_state.show_debug:
+                if query_type == "hybrid":
+                    debug = {
+                        "query_type": "hybrid",
+                        "sub_questions": result.get("sub_questions", []),
+                        "sub_results": dict(result.get("sub_results", [])),
+                    }
+                elif query_type == "database":
+                    debug = {
+                        "query_type": "database",
+                        "sql_query": result.get("sql_query", ""),
+                        "sql_result_preview": (
+                            (result.get("sql_result", "")[:500] + "...")
+                            if len(result.get("sql_result", "")) > 500
+                            else result.get("sql_result", "")
+                        ),
+                        "db_error": result.get("db_error", ""),
+                    }
+                else:
+                    debug = {
+                        "query_type": result.get("query_type", "document"),
+                        "need_retrieval": result.get("need_retrieval"),
+                        "rewrite_tries": result.get("rewrite_tries", 0),
+                        "retries": result.get("retries", 0),
+                        "retrieved_docs": len(result.get("docs", []) or []),
+                        "relevant_docs": len(result.get("relevant_docs", []) or []),
+                        "issup": result.get("issup"),
+                        "evidence": result.get("evidence", []),
+                        "isuse": result.get("isuse"),
+                        "use_reason": result.get("use_reason", ""),
+                    }
 
-            if query_type == "hybrid":
-                debug = {
-                    "query_type": "hybrid",
-                    "sub_questions": result.get("sub_questions", []),
-                    "sub_results": dict(result.get("sub_results", [])),
-                    "logs": collected_logs,
-                }
-            elif query_type == "database":
-                debug = {
-                    "query_type": "database",
-                    "sql_query": result.get("sql_query", ""),
-                    "sql_result_preview": (result.get("sql_result", "")[:500] + "...") if len(result.get("sql_result", "")) > 500 else result.get("sql_result", ""),
-                    "db_error": result.get("db_error", ""),
-                    "logs": collected_logs,
-                }
-            else:
-                debug = {
-                    "query_type": result.get("query_type", "document"),
-                    "need_retrieval": result.get("need_retrieval"),
-                    "rewrite_tries": result.get("rewrite_tries", 0),
-                    "retries": result.get("retries", 0),
-                    "retrieved_docs": len(result.get("docs", []) or []),
-                    "relevant_docs": len(result.get("relevant_docs", []) or []),
-                    "issup": result.get("issup"),
-                    "evidence": result.get("evidence", []),
-                    "isuse": result.get("isuse"),
-                    "use_reason": result.get("use_reason", ""),
-                    "logs": collected_logs,
-                }
+                debug["escalated"] = result.get("escalated", False)
+                debug["escalation_reason"] = result.get("escalation_reason", "")
 
-            with st.expander("Debug info"):
-                st.json(debug)
+                with st.expander("Debug Info"):
+                    st.json(debug)
 
             # Accumulate retrieval/sql metadata across turns
             new_docs = [
@@ -239,4 +364,8 @@ if prompt := st.chat_input("Ask a question..."):
             placeholder.error(f"Error: {e}")
             final_answer = f"Error: {e}"
 
-        st.session_state.history.append({"role": "assistant", "content": final_answer, "debug": debug if 'debug' in locals() else {}})
+        st.session_state.history.append({
+            "role": "assistant",
+            "content": final_answer,
+            "debug": debug if st.session_state.show_debug else {},
+        })
