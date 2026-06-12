@@ -1,14 +1,9 @@
-import sys
 import os
 import re
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+import requests
 import streamlit as st
 
-from app.graph.builder import build_app
-from app.state import State
-from app.stream_events import TokenCollector
+API_URL = os.getenv("API_URL", "http://localhost:8000")
 
 
 
@@ -133,11 +128,6 @@ with st.sidebar:
     if st.session_state.show_trace or st.session_state.show_debug:
         st.caption("Demo / developer features enabled")
 
-if "app" not in st.session_state:
-    with st.spinner("Loading documents and building graph..."):
-        st.session_state.app = build_app()
-        st.session_state.app_ready = True
-
 if "history" not in st.session_state:
     st.session_state.history = []
 
@@ -162,26 +152,20 @@ force_esc = st.session_state.pop("force_escalation", False)
 if force_esc and st.session_state.history:
     chat_history = [{"role": m["role"], "content": m["content"]} for m in st.session_state.history]
     with st.spinner("Generating handoff summary..."):
-        handoff_state: State = {
-            "question": "I need to speak to a human agent right now",
-            "original_question": chat_history[-1]["content"],
-            "query_type": "conversation",
-            "chat_history": chat_history,
-            "sub_questions": [], "sub_results": [], "sub_question": None,
-            "retrieval_query": "", "rewrite_tries": 0, "need_retrieval": False,
-            "docs": [], "relevant_docs": [], "context": "", "answer": "",
-            "issup": "fully_supported", "evidence": [], "retries": 0,
-            "isuse": "useful", "use_reason": "",
-            "logs": [], "sql_query": "", "sql_result": "",
-            "db_answer": "", "db_error": "", "visualization_spec": None,
-            "escalated": False, "escalation_reason": "", "handoff_summary": "",
-            "rag_docs_used": st.session_state.rag_docs_used,
-            "sql_queries_executed": st.session_state.sql_queries_executed,
-        }
-        result = None
-        for output in st.session_state.app.stream(handoff_state, stream_mode="values"):
-            result = output
-        summary = (result or {}).get("handoff_summary", "User requested handoff.")
+        try:
+            resp = requests.post(
+                f"{API_URL}/chat",
+                json={
+                    "question": "I need to speak to a human agent right now",
+                    "chat_history": chat_history,
+                },
+                timeout=120,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            summary = data.get("handoff_summary", "User requested handoff.")
+        except Exception:
+            summary = "User requested handoff."
     with st.chat_message("assistant"):
         st.warning("🤝 Escalated to human support — reason: **human_requested**")
         with st.expander("Handoff summary for agent"):
@@ -194,103 +178,38 @@ if prompt := st.chat_input("Ask a question..."):
 
     with st.chat_message("assistant"):
         placeholder = st.empty()
-        progress_placeholder = st.empty()
         placeholder.markdown("Thinking...")
 
-        chat_history = []
-        for msg in st.session_state.history:
-            chat_history.append({"role": msg["role"], "content": msg["content"]})
+        chat_history = [{"role": m["role"], "content": m["content"]} for m in st.session_state.history]
 
-        initial_state: State = {
-            "question": prompt,
-            "original_question": prompt,
-            "query_type": "document",
-            "chat_history": chat_history,
-            "sub_questions": [],
-            "sub_results": [],
-            "sub_question": None,
-            "retrieval_query": "",
-            "rewrite_tries": 0,
-            "need_retrieval": False,
-            "docs": [],
-            "relevant_docs": [],
-            "context": "",
-            "answer": "",
-            "issup": "no_support",
-            "evidence": [],
-            "retries": 0,
-            "isuse": "not_useful",
-            "use_reason": "",
-            "logs": [],
-            "sql_query": "",
-            "sql_result": "",
-            "db_answer": "",
-            "db_error": "",
-            "visualization_spec": None,
-            "escalated": False,
-            "escalation_reason": "",
-            "handoff_summary": "",
-            "rag_docs_used": st.session_state.rag_docs_used,
-            "sql_queries_executed": st.session_state.sql_queries_executed,
-        }
-
+        data = {}
         try:
-            collected_logs: list[str] = []
-            final_state = None
+            resp = requests.post(
+                f"{API_URL}/chat",
+                json={
+                    "question": prompt,
+                    "chat_history": chat_history,
+                },
+                timeout=120,
+            )
+            resp.raise_for_status()
+            data = resp.json()
 
-            # TokenCollector preserved for future FastAPI/SSE use — not rendered
-            collector = TokenCollector()
-            debug = {}
-
-            with progress_placeholder.container():
-                trace_area = st.empty()
-                if st.session_state.show_trace:
-                    trace_area.markdown("**🧠 Agent Execution**\n\n_starting..._")
-
-            for output in st.session_state.app.stream(
-                initial_state,
-                stream_mode="values",
-                config={"callbacks": [collector]},
-            ):
-                final_state = output
-                new_logs = output.get("logs", [])
-                if isinstance(new_logs, list):
-                    for log in new_logs:
-                        if log not in collected_logs:
-                            collected_logs.append(log)
-
-                    if st.session_state.show_trace:
-                        timeline = _format_timeline(collected_logs)
-                        trace_area.markdown(f"**🧠 Agent Execution**\n\n{timeline}")
-
-                # Drain tokens (preserved for future SSE) — not used for display
-                while not collector._queue.empty():
-                    collector._queue.get_nowait()
-
-            collector.mark_done()
-            while not collector._queue.empty():
-                collector._queue.get_nowait()
-
-            result = final_state or {}
-            query_type = result.get("query_type", "document")
-
-            if query_type in ("database", "hybrid"):
-                final_answer = result.get("db_answer") or result.get("answer", "No answer found.")
-            else:
-                final_answer = result.get("answer", "No answer found.")
+            final_answer = data.get("answer", "No answer found.")
 
             # ── Section 1: Final Answer ──
             placeholder.markdown(final_answer)
 
-            # ── Section 2: Agent Execution timeline (collapsed after completion) ──
+            # ── Section 2: Agent Execution timeline ──
+            collected_logs = data.get("logs", [])
             if st.session_state.show_trace and collected_logs:
                 timeline = _format_timeline(collected_logs)
                 with st.expander("🧠 Agent Execution", expanded=False):
                     st.markdown(timeline)
 
             # ── Visualization ──
-            viz_spec = result.get("visualization_spec")
-            sql_raw = result.get("sql_result", "")
+            viz_spec = data.get("visualization_spec")
+            sql_raw = data.get("sql_result", "")
             if viz_spec and sql_raw:
                 try:
                     import json
@@ -301,65 +220,33 @@ if prompt := st.chat_input("Ask a question..."):
                     pass
 
             # ── Escalation banner ──
-            if result.get("escalated"):
-                st.warning(f"🤝 Escalated to human support — reason: **{result['escalation_reason']}**")
-                summary = result.get("handoff_summary", "")
+            if data.get("escalated"):
+                st.warning(f"🤝 Escalated to human support — reason: **{data['escalation_reason']}**")
+                summary = data.get("handoff_summary", "")
                 if summary:
                     with st.expander("Handoff summary for agent"):
                         st.markdown(summary)
 
-            # ── Section 3: Debug Panel (always collapsed) ──
+            # ── Section 3: Debug Panel ──
             if st.session_state.show_debug:
-                if query_type == "hybrid":
-                    debug = {
-                        "query_type": "hybrid",
-                        "sub_questions": result.get("sub_questions", []),
-                        "sub_results": dict(result.get("sub_results", [])),
-                    }
-                elif query_type == "database":
-                    debug = {
-                        "query_type": "database",
-                        "sql_query": result.get("sql_query", ""),
-                        "sql_result_preview": (
-                            (result.get("sql_result", "")[:500] + "...")
-                            if len(result.get("sql_result", "")) > 500
-                            else result.get("sql_result", "")
-                        ),
-                        "db_error": result.get("db_error", ""),
-                    }
-                else:
-                    debug = {
-                        "query_type": result.get("query_type", "document"),
-                        "need_retrieval": result.get("need_retrieval"),
-                        "rewrite_tries": result.get("rewrite_tries", 0),
-                        "retries": result.get("retries", 0),
-                        "retrieved_docs": len(result.get("docs", []) or []),
-                        "relevant_docs": len(result.get("relevant_docs", []) or []),
-                        "issup": result.get("issup"),
-                        "evidence": result.get("evidence", []),
-                        "isuse": result.get("isuse"),
-                        "use_reason": result.get("use_reason", ""),
-                    }
-
-                debug["escalated"] = result.get("escalated", False)
-                debug["escalation_reason"] = result.get("escalation_reason", "")
-
                 with st.expander("Debug Info"):
-                    st.json(debug)
+                    st.json(data.get("debug", {}))
 
-            # Accumulate retrieval/sql metadata across turns
-            new_docs = [
-                d.metadata.get("title") or d.metadata.get("source", "")
-                for d in result.get("relevant_docs", []) or []
-                if d is not None
-            ]
-            new_docs = [t for t in new_docs if t]
-            sql_raw = result.get("sql_query", "")
-            new_sql = [sql_raw.replace("\n", " ")[:150]] if sql_raw else []
-            docs = list(dict.fromkeys(st.session_state.rag_docs_used + new_docs))[-5:]
-            queries = (st.session_state.sql_queries_executed + new_sql)[-5:]
-            st.session_state.rag_docs_used = docs
-            st.session_state.sql_queries_executed = queries
+            # Cross-turn metadata accumulation deferred to follow-up proposal.
+
+        except requests.exceptions.HTTPError as e:
+            status = resp.status_code
+            detail = resp.json().get("detail", str(e))
+            if status == 429:
+                error_msg = "Rate limit exceeded. Please wait and try again."
+            else:
+                error_msg = f"API Error ({status}): {detail}"
+            placeholder.error(error_msg)
+            final_answer = error_msg
+        except requests.exceptions.ConnectionError:
+            error_msg = "Cannot connect to API server. Make sure FastAPI is running."
+            placeholder.error(error_msg)
+            final_answer = error_msg
         except Exception as e:
             placeholder.error(f"Error: {e}")
             final_answer = f"Error: {e}"
@@ -367,5 +254,5 @@ if prompt := st.chat_input("Ask a question..."):
         st.session_state.history.append({
             "role": "assistant",
             "content": final_answer,
-            "debug": debug if st.session_state.show_debug else {},
+            "debug": data.get("debug", {}) if st.session_state.show_debug else {},
         })

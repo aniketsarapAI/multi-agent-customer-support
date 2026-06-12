@@ -30,6 +30,8 @@ class ChatResponse(BaseModel):
     visualization_spec: dict | None = None
     escalated: bool = False
     escalation_reason: str = ""
+    handoff_summary: str = ""
+    sql_result: str = ""
 
 
 # ── Graph lifecycle ──
@@ -154,7 +156,9 @@ def chat(request: Request, req: ChatRequest):
             "rewrite_tries": result.get("rewrite_tries", 0),
             "retries": result.get("retries", 0),
             "sql_query": result.get("sql_query", ""),
+            "sql_result": result.get("sql_result", ""),
             "db_error": result.get("db_error", ""),
+            "need_retrieval": result.get("need_retrieval"),
             "sub_questions": result.get("sub_questions", []),
             "sub_results": dict(result.get("sub_results", [])),
         }
@@ -167,6 +171,8 @@ def chat(request: Request, req: ChatRequest):
             visualization_spec=result.get("visualization_spec"),
             escalated=result.get("escalated", False),
             escalation_reason=result.get("escalation_reason", ""),
+            handoff_summary=result.get("handoff_summary", ""),
+            sql_result=result.get("sql_result", ""),
         )
 
     except HTTPException:
