@@ -8,17 +8,21 @@ AI-powered customer support that knows both your documents *and* your database. 
 
 ## Table of Contents
 
-- [Tech Stack](#-core-tech-stack)
 - [Live Demo](#live-demo)
+- [Key Outcomes](#key-outcomes)
+- [Tech Stack](#-core-tech-stack)
 - [Project Overview](#project-overview)
+- [Observability](#observability)
+- [Monitoring & Tracing](#monitoring--tracing)
 - [Features](#features)
 - [Engineering Decisions](#engineering-decisions)
 - [Architecture](#architecture)
 - [API Reference](#api-reference)
 - [Project Structure](#project-structure)
 - [Quick Start](#quick-start)
-- [Deployment](#deployment)
+- [Public HTTPS Deployment](#public-https-deployment)
 - [Testing & Validation](#testing--validation)
+- [Lessons Learned](#lessons-learned)
 - [Roadmap](#roadmap)
 
 ## 🛠️ Core Tech Stack
@@ -37,6 +41,7 @@ AI-powered customer support that knows both your documents *and* your database. 
   <img src="https://img.shields.io/badge/Docker-2CA5E0?style=for-the-badge&logo=docker&logoColor=white" alt="Docker" />
   <img src="https://img.shields.io/badge/AWS_EC2-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white" alt="AWS EC2" />
   <img src="https://img.shields.io/badge/Nginx-009639?style=for-the-badge&logo=nginx&logoColor=white" alt="Nginx" />
+  <img src="https://img.shields.io/badge/LangSmith-6F2DA8?style=for-the-badge&logo=langchain&logoColor=white" alt="LangSmith" />
 </p>
 
 ## Live Demo
@@ -53,6 +58,40 @@ AI-powered customer support that knows both your documents *and* your database. 
 | `Thanks!` | Conversation | Direct response |
 | `Talk to a human` | Escalation | Gmail handoff |
 | `How many customers from the US with orders over $500?` | Hybrid | Document + SQL |
+
+## Key Outcomes
+
+- Built a multi-agent customer support system using LangGraph and LangChain
+- Combined RAG, SQL analytics, and intelligent routing workflows
+- Deployed publicly on AWS EC2 using Docker, Nginx, and HTTPS
+- Integrated TiDB for structured data querying
+- Implemented LangSmith observability for trace analysis and debugging
+- Added human escalation and fallback workflows
+- Supports document retrieval, database analytics, and hybrid queries
+
+## Observability
+
+LangSmith tracing is enabled across all agent workflows.
+
+Current monitoring includes:
+
+- Agent routing decisions
+- Tool execution traces
+- Error tracking
+- Latency measurements
+- Token consumption monitoring
+
+Example metrics collected during testing:
+
+- 250+ traces
+- ~4% observed error rate
+- P50 latency: ~8.5 seconds
+- P99 latency: ~47 seconds
+- 275k+ tokens processed
+
+## Monitoring & Tracing
+
+![LangSmith Dashboard](assets/langsmith-dashboard.png)
 
 ## Project Overview
 
@@ -113,7 +152,7 @@ Separate containers for API (FastAPI) and UI (Streamlit). Docker networking enab
 Deployed on t3.small instance. Elastic IP for persistent access. Nginx reverse proxy handles HTTPS via Let's Encrypt. Automatic certificate renewal.
 
 **Rate Limiting**  
-Nginx per-IP rate limiting: 20 requests/minute. Prevents abuse without API-level complexity.
+Rate limiting configured via Nginx.
 
 ### Robustness
 
@@ -184,15 +223,13 @@ Documented in `BUILD_LOG.md` and `DEPLOYMENT.md`. Covers:
 
 **Live Demo Validation**  
 Deployed to AWS EC2. Public access via HTTPS. Manual testing in production environment confirms:
-- End-to-end latency (2-6 seconds typical)
-- Concurrent user handling (Nginx rate limiting)
 - Database consistency (no stale reads)
 
 **Error Injection**  
 Intentional failures tested:
 - Invalid SQL (auto-recovery tested)
 - Missing documents (RAG fallback tested)
-- Rate limit threshold (Nginx behavior validated)
+- Rate limit threshold (Nginx behavior observed — tested locally, configured for production)
 
 **What's missing:**  
 Automated integration tests in pytest. Build validation is manual but comprehensive.
@@ -551,9 +588,9 @@ curl http://localhost:8000/health
 
 Expected: `{"status": "healthy", ...}`
 
-## Deployment
+## Public HTTPS Deployment
 
-### Live Production
+### Live
 
 **URL:** https://multiagent-ai.localnode.app
 
@@ -578,11 +615,15 @@ The full 25-phase deployment arc is documented in **[DEPLOYMENT.md](DEPLOYMENT.m
 7. Nginx reverse proxy setup
 8. Let's Encrypt SSL certificate and renewal
 
-Key lessons:
-- **UI/API separation is essential for deployment.** Tight coupling prevents scaling.
-- **Docker local ≠ Docker AWS.** Buildx and BuildKit versions matter.
-- **Start simple: EC2 + Docker Compose.** Premature migration to ECS Fargate adds unnecessary complexity.
-- **Always set billing safeguards first.** A $5 monthly budget alert prevents surprises.
+## Lessons Learned
+
+1. **Separate UI from execution logic early** — simplifies deployment significantly. The initial architecture had Streamlit importing LangGraph directly; refactoring to an HTTP boundary enabled clean containerization and cloud deployment.
+2. **Docker behaves differently on cloud hosts than local machines** — a working local build does not guarantee AWS success. Buildx and BuildKit version mismatches caused real failures during deployment.
+3. **Reverse proxy, DNS, and SSL configuration often take longer than application development** — allocate time accordingly. Access issues can originate from any layer in the chain.
+4. **Public deployment requires careful handling of security groups, DNS records, and certificate management** — each layer can block access independently, and errors manifest as opaque browser failures.
+5. **Multi-agent systems need observability** — LangSmith made debugging routing decisions and failures tractable. Without it, understanding which agent mishandled a query would require log spelunking.
+6. **API contracts should be explicit and versioned** — frontend/backend drift is hard to catch without integration tests. Missing fields like `handoff_summary` and `sql_result` only became visible during the HTTP refactor.
+7. **Configure billing safeguards before deploying cloud infrastructure** — a $5 monthly budget alert prevents surprise charges.
 
 ### To Deploy Your Own
 
@@ -609,7 +650,7 @@ Full step-by-step in `DEPLOYMENT.md`.
 | Error recovery | Invalid SQL structure | Auto-refined + retry | ✅ Pass |
 | Escalation | "Talk to human" | Email sent, escalated=true | ✅ Pass |
 | Conversation | "Thanks!" | Direct NL response | ✅ Pass |
-| Rate limiting | 21 requests in 60 sec | 20th succeeds, 21st blocked | ✅ Pass |
+| Rate limiting | 21 requests in 60 sec | Nginx configured to rate-limit | ✅ Configured |
 | Health check | `curl /health` | 200 OK, healthy status | ✅ Pass |
 | Logging | Any query | Logs array populated | ✅ Pass |
 
@@ -618,10 +659,8 @@ Automated pytest integration tests. Validation is comprehensive but manual.
 
 ### Live Demo Validation
 
-Deployed to AWS EC2. Public HTTPS access. Manual testing confirms:
+Deployed to AWS EC2. Public HTTPS access. Manual testing in production confirms:
 
-- End-to-end latency: 2–6 seconds (typical)
-- Concurrent user handling: Nginx rate limiting enforced
 - Database consistency: No stale reads
 - Email delivery: Escalations arrive in inbox
 - Chart rendering: Vega-Lite specs render correctly in Streamlit
@@ -631,36 +670,19 @@ Deployed to AWS EC2. Public HTTPS access. Manual testing confirms:
 Intentional failures tested in production:
 - Invalid SQL → auto-recovery verified
 - Missing document → RAG fallback behavior correct
-- Rate limit threshold → Nginx behavior enforced
+- Rate limit threshold → Nginx configured to rate-limit
 - FAISS index missing → Startup validation caught
 
 ## Roadmap
 
 Planned improvements:
 
-### Phase 2: Robustness
+### Short-term
 
-- [ ] Pytest integration tests (currently manual)
-- [ ] Prometheus metrics (replace in-memory counters)
-- [ ] LangSmith tracing integration
-- [ ] Redis vector store migration (from in-memory FAISS)
-- [ ] Session persistence (conversation history in DynamoDB)
-
-### Phase 3: Scale
-
-- [ ] Multi-instance deployment (ALB + ECS Fargate)
-- [ ] Database connection pooling (ProxySQL)
-- [ ] API authentication (JWT / API keys)
-- [ ] Custom Grafana dashboard (request latency, error rates, escalation frequency)
-- [ ] Async worker queue for long-running tasks
-
-### Phase 4: Intelligence
-
-- [ ] Multi-turn context refinement (iterate on vague questions)
-- [ ] Schema-aware SQL planner (reduce error loops)
-- [ ] Semantic SQL generation (multi-join queries)
-- [ ] Document clustering (relevant document prioritization)
-- [ ] Feedback loop (user upvotes/downvotes for reranking)
+- [ ] Automated integration tests (pytest)
+- [ ] Session persistence for conversation history
+- [ ] SQL query refinement improvements
+- [ ] LangSmith evaluation and regression tracking
 
 ---
 
