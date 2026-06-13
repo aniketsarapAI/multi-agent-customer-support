@@ -1,6 +1,7 @@
 services:
   api:
     build: .
+    restart: unless-stopped
     ports:
       - "8000:8000"
     env_file:
@@ -10,6 +11,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.ui
+    restart: unless-stopped
     ports:
       - "8501:8501"
     environment:
