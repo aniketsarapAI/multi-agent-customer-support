@@ -1,11 +1,7 @@
-import os
 import pymysql
 import pymysql.cursors
-from dotenv import load_dotenv
 
-from app.config import DOTENV_PATH
-
-load_dotenv(DOTENV_PATH)
+from app.config import settings
 
 TABLE_SCHEMA = """
 Table: customers (columns: customer_id TEXT, customer_unique_id TEXT, customer_zip_code_prefix TEXT, customer_city TEXT, customer_state TEXT)
@@ -24,11 +20,11 @@ Table: leads_closed (columns: mql_id TEXT, seller_id TEXT, sdr_id TEXT, sr_id TE
 
 def get_connection():
     return pymysql.connect(
-        host=os.getenv("MYSQL_HOST", "gateway01.eu-central-1.prod.aws.tidbcloud.com"),
-        port=int(os.getenv("MYSQL_PORT", "4000")),
-        user=os.getenv("MYSQL_USER", "NdzUcUBMBbtih25.root"),
-        password=os.getenv("MYSQL_PASSWORD", "Jxarww4HsQMtRuLa"),
-        database="ecommerce_v2",
+        host=settings.mysql_host,
+        port=settings.mysql_port,
+        user=settings.mysql_user,
+        password=settings.mysql_password,
+        database=settings.mysql_database,
         ssl={"ssl": True},
         cursorclass=pymysql.cursors.DictCursor,
         connect_timeout=10,

@@ -1,0 +1,35 @@
+{
+    "family": "selfragmcp-ui",
+    "networkMode": "awsvpc",
+    "requiresCompatibilities": ["FARGATE"],
+    "cpu": "256",
+    "memory": "512",
+    "executionRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskExecutionRole",
+    "containerDefinitions": [
+        {
+            "name": "ui",
+            "image": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:ui-latest",
+            "essential": true,
+            "portMappings": [
+                {
+                    "containerPort": 8501,
+                    "protocol": "tcp"
+                }
+            ],
+            "environment": [
+                {
+                    "name": "API_URL",
+                    "value": "http://localhost:8000"
+                }
+            ],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": "/ecs/selfragmcp/ui",
+                    "awslogs-region": "${AWS_REGION}",
+                    "awslogs-stream-prefix": "ui"
+                }
+            }
+        }
+    ]
+}

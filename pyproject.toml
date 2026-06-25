@@ -1,0 +1,37 @@
+[project]
+name = "selfrag-mcp"
+version = "1.0.0"
+description = "Multi-agent customer support with Self-RAG, SQL queries, hybrid decomposition, and human escalation."
+requires-python = ">=3.12"
+dependencies = [
+    "langchain-community>=0.3.0",
+    "langchain-openai>=0.2.0",
+    "langchain-text-splitters>=0.3.0",
+    "langchain-core>=0.3.0",
+    "langgraph>=0.2.0",
+    "faiss-cpu>=1.8.0",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "python-dotenv>=1.0",
+    "pypdf>=4.0",
+    "streamlit>=1.35.0",
+    "sentence-transformers>=3.0",
+    "langchain-huggingface>=1.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "langchain-google-genai>=2.0.0",
+    "slowapi>=0.1.9",
+    "pymysql",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.0",
+    "httpx>=0.28.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"

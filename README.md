@@ -23,6 +23,7 @@ AI-powered customer support that knows both your documents *and* your database. 
 - [Public HTTPS Deployment](#public-https-deployment)
 - [Testing & Validation](#testing--validation)
 - [Lessons Learned](#lessons-learned)
+- [Improvements (Jun 25)](#improvements-jun-25)
 - [Roadmap](#roadmap)
 
 ## 🛠️ Core Tech Stack
@@ -80,6 +81,9 @@ Current monitoring includes:
 - Error tracking
 - Latency measurements
 - Token consumption monitoring
+- Structured JSON logging (ISO timestamps, level, module, function)
+- In-memory metrics via `GET /metrics`
+- Response cache stats via `GET /cache/stats`
 
 Example metrics collected during testing:
 
@@ -153,6 +157,12 @@ Deployed on t3.small instance. Elastic IP for persistent access. Nginx reverse p
 
 **Rate Limiting**  
 Rate limiting configured via Nginx.
+
+**Security Pipeline**  
+Prompt injection detection (10 patterns), PII masking (email, phone, SSN, credit card), output validation for harmful content — all wired into every `/chat` request.
+
+**Response Caching**  
+SHA-256 keyed TTL cache deduplicates identical questions. Configurable duration. `/cache/stats` endpoint exposes hit rate.
 
 ### Robustness
 
@@ -458,17 +468,20 @@ All configuration via environment variables. See `.env.example`:
 selfragmcp/
 ├── app/
 │   ├── __init__.py
-│   ├── config.py             # Settings, paths, constants
+│   ├── config.py             # Pydantic-settings config (Jun 25)
 │   ├── state.py              # LangGraph State TypedDict
 │   ├── models.py             # Pydantic request/response schemas
 │   ├── prompts.py            # RAG + SQL + hybrid LLM prompts
-│   ├── llm.py                # get_llm() / get_embeddings()
+│   ├── llm.py                # LLMWithFallback wrapper (Jun 25)
 │   ├── vector_store.py       # FAISS index builder + retriever
 │   ├── db_agent.py           # TiDB Cloud connection + queries
 │   ├── email_alert.py        # Gmail SMTP escalation handler
 │   ├── chat_history.py       # Conversation formatting
 │   ├── stream_events.py      # TokenCollector for UI streaming
-│   ├── api.py                # FastAPI /health /chat /docs endpoints
+│   ├── security.py           # Security pipeline (Jun 25)
+│   ├── cache.py              # Response cache with TTL (Jun 25)
+│   ├── monitoring.py         # JSON logger + MetricsCollector (Jun 25)
+│   ├── api.py                # FastAPI /health /chat /metrics /cache/stats
 │   └── graph/
 │       ├── __init__.py
 │       ├── builder.py        # StateGraph assembly + compilation
@@ -479,13 +492,19 @@ selfragmcp/
 ├── ui/
 │   └── streamlit_app.py      # Streamlit UI (HTTP client)
 ├── documents/                # PDF policy documents
+├── tests/                    # 38 automated tests (Jun 25)
+│   ├── __init__.py
+│   ├── test_security.py
+│   ├── test_cache.py
+│   └── test_api.py
 ├── main.py                   # CLI entry point
-├── Dockerfile                # API container (FastAPI)
+├── Dockerfile                # API container (non-root user, HEALTHCHECK) (Jun 25)
 ├── Dockerfile.ui             # UI container (Streamlit)
-├── docker-compose.yml        # Multi-service orchestration
+├── docker-compose.yml        # Multi-service orchestration (healthchecks) (Jun 25)
+├── pyproject.toml            # Project metadata + pytest config (Jun 25)
 ├── requirements.txt          # API dependencies
 ├── requirements-ui.txt       # UI dependencies
-├── .env.example              # Environment template
+├── .env.example              # Environment template (Jun 25)
 ├── .gitignore
 ├── README.md                 # This file
 ├── BUILD_LOG.md              # Build journey (1090 lines)
@@ -545,6 +564,22 @@ Response:
 }
 ```
 
+### Metrics
+
+```bash
+GET /metrics
+```
+
+Response: `{"total_requests": 42, "total_errors": 1, "error_rate": 0.0238, "avg_latency_ms": 8500.0, "cache_hit_rate": 0.15, ...}`
+
+### Cache Stats
+
+```bash
+GET /cache/stats
+```
+
+Response: `{"hits": 5, "misses": 28, "hit_rate": "15.2%", "cached_entries": 3}`
+
 Full Swagger docs at `/docs`.
 
 ## Quick Start
@@ -573,11 +608,20 @@ docker compose up --build
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
+# Or using uv (faster):
+# uv sync
+
 # In one terminal:
 uvicorn app.api:app --host 0.0.0.0 --port 8000
 
 # In another:
 streamlit run ui/streamlit_app.py
+```
+
+### Run Tests (38 automated)
+
+```bash
+uv run pytest tests/ -v
 ```
 
 ### Verify
@@ -654,8 +698,17 @@ Full step-by-step in `DEPLOYMENT.md`.
 | Health check | `curl /health` | 200 OK, healthy status | ✅ Pass |
 | Logging | Any query | Logs array populated | ✅ Pass |
 
-**What's missing:**  
-Automated pytest integration tests. Validation is comprehensive but manual.
+### Automated Tests (38 total)
+
+| Suite | Tests | What it covers |
+|---|---|---|
+| `test_security.py` | 19 | Injection detection, PII masking, output validation, security pipeline |
+| `test_cache.py` | 5 | Cache miss, hit, case-insensitive, TTL expiration, stats tracking |
+| `test_api.py` | 14 | API structure via AST, response model schemas, endpoint registration |
+
+Run: `uv run pytest tests/ -v`
+
+All tests are deterministic — no LLM calls, no network, no model downloads. Added Jun 25.
 
 ### Live Demo Validation
 
@@ -673,19 +726,55 @@ Intentional failures tested in production:
 - Rate limit threshold → Nginx configured to rate-limit
 - FAISS index missing → Startup validation caught
 
+## Improvements (Jun 25)
+
+Production-hardening improvements ported from [production-ai-platform](https://github.com/aniketsarapAI/production-ai-platform).
+
+### Phase 1: Foundation
+
+- **Pydantic-settings config** — typed, validated env vars with `lru_cache` singleton, `is_production` property
+- **Structured JSON logging** — ISO timestamps, level, module, function via `app/monitoring.py`
+- **`pyproject.toml`** — project metadata, dependency groups, pytest config
+
+### Phase 2: Security & Container Hardening
+
+- **Security pipeline** — `InputSanitizer` (10 injection patterns), `PIIDetector` (4 PII types), `OutputValidator` (harmful content + PII leak), wired into `/chat`
+- **Non-root Docker user** — `appuser` with `chown`, `USER appuser`
+- **Docker HEALTHCHECK** — `curl -f localhost:8000/health` every 30s, 3 retries
+- **docker-compose healthchecks** — API and UI services with `condition: service_healthy`
+
+### Phase 3: Performance & Observability
+
+- **Response cache** — SHA-256 keyed, configurable TTL, case-insensitive, `GET /cache/stats`
+- **Metrics collector** — request count, latency, error rate, token tracking via `GET /metrics`
+- **Deep health check** — reports readiness of graph, security, cache individually
+
+### Phase 4: Resilience
+
+- **Model fallback** — primary → fallback → graceful error via `LLMWithFallback` wrapper
+- **Timeout hardening** — `ChatOpenAI(timeout=30, max_retries=0)` prevents hangs
+
+### Phase 5: Testing
+
+- **38 automated tests** — 19 security, 5 cache, 14 API structure — all deterministic, zero external deps
+- **Run with:** `uv run pytest tests/ -v`
+
 ## Roadmap
 
 Planned improvements:
 
 ### Short-term
 
-- [ ] Automated integration tests (pytest)
+- [x] Automated integration tests (pytest) — 38 tests added (Jun 25)
+- [x] LangSmith evaluation and regression tracking — security pipeline instrumented with `@traceable` (Jun 25)
+- [x] Structured logging + metrics — JSON logger, `/metrics`, `/cache/stats` endpoints (Jun 25)
+- [x] Security pipeline — injection detection, PII masking, output validation (Jun 25)
+- [x] Docker hardening — non-root user, HEALTHCHECK, compose healthchecks (Jun 25)
 - [ ] Session persistence for conversation history
 - [ ] SQL query refinement improvements
-- [ ] LangSmith evaluation and regression tracking
 
 ---
 
 **Built by Aniket Sarap**  
 **Production deployment:** June 2026  
-**Last updated:** June 13, 2026
+**Last updated:** June 25, 2026

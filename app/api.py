@@ -1,4 +1,3 @@
-import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
@@ -10,6 +9,11 @@ from pydantic import BaseModel, Field
 
 from app.graph.builder import build_app
 from app.state import State
+from app.monitoring import get_logger, MetricsCollector, RequestTimer
+from app.security import SecurityPipeline
+from app.cache import ResponseCache
+
+logger = get_logger("api")
 
 
 # ── Request / Response models ──
@@ -32,21 +36,53 @@ class ChatResponse(BaseModel):
     escalation_reason: str = ""
     handoff_summary: str = ""
     sql_result: str = ""
+    security_notes: list[str] = []
+    cached: bool = False
+    processing_time_ms: float = 0
+
+
+class HealthResponse(BaseModel):
+    status: str
+    graph: str
+    security: str
+    cache: str
+    vector_store: str
+    database: str
+
+
+class MetricsResponse(BaseModel):
+    total_requests: int
+    total_errors: int
+    error_rate: float
+    avg_latency_ms: float
+    cache_hits: int
+    cache_misses: int
+    cache_hit_rate: float
 
 
 # ── Graph lifecycle ──
 
 _graph = None
+_security = None
+_cache = None
+_metrics = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _graph
-    logging.info("Building graph (loads PDFs, builds FAISS index)...")
+    global _graph, _security, _cache, _metrics
+    logger.info("Initializing components...")
+    _security = SecurityPipeline()
+    _cache = ResponseCache(ttl_seconds=300)
+    _metrics = MetricsCollector()
+    logger.info("Building graph (loads PDFs, builds FAISS index)...")
     _graph = build_app()
-    logging.info("Graph ready")
+    logger.info("Graph ready — all components initialized")
     yield
     _graph = None
+    _security = None
+    _cache = None
+    _metrics = None
 
 
 app = FastAPI(
@@ -76,24 +112,65 @@ async def health():
         raise HTTPException(status_code=503, detail="Graph not ready")
     return {
         "status": "healthy",
+        "graph": "ready" if _graph is not None else "not_ready",
+        "security": "ready" if _security is not None else "not_ready",
+        "cache": "ready" if _cache is not None else "not_ready",
         "vector_store": "ready",
         "database": "configured",
-        "llm": "configured",
     }
+
+
+@app.get("/metrics")
+async def metrics():
+    if _metrics is None:
+        raise HTTPException(status_code=503, detail="Metrics not ready")
+    return _metrics.summary
+
+
+@app.get("/cache/stats")
+async def cache_stats():
+    if _cache is None:
+        raise HTTPException(status_code=503, detail="Cache not ready")
+    return _cache.stats
 
 
 @app.post("/chat", response_model=ChatResponse)
 @limiter.limit("10/minute")
 def chat(request: Request, req: ChatRequest):
-    if _graph is None:
-        raise HTTPException(status_code=503, detail="Graph not ready")
+    if _graph is None or _security is None or _cache is None or _metrics is None:
+        raise HTTPException(status_code=503, detail="Server not ready")
 
     question = req.question.strip()
     if not question:
         raise HTTPException(status_code=422, detail="Question must not be empty")
 
+    timer = RequestTimer()
+
+    is_allowed, cleaned_question, security_notes = _security.check_input(question)
+    if not is_allowed:
+        logger.warning("Security check blocked input", extra={"extra_data": {"question": question[:100]}})
+        raise HTTPException(status_code=400, detail=security_notes[0] if security_notes else "Input blocked by security check")
+
+    if cleaned_question != question:
+        logger.info("Input cleaned by security pipeline", extra={"extra_data": {"original": question[:50], "cleaned": cleaned_question[:50]}})
+
+    cached_response = _cache.get(cleaned_question)
+    if cached_response is not None:
+        logger.info("Cache hit", extra={"extra_data": {"question": cleaned_question[:50]}})
+        timer.elapsed_ms = 0
+        _metrics.record_request(latency_ms=0, cache_hit=True)
+        return ChatResponse(
+            answer=cached_response,
+            query_type="cached",
+            logs=["📦 Response served from cache"],
+            debug={},
+            security_notes=security_notes,
+            cached=True,
+            processing_time_ms=0,
+        )
+
     initial_state: State = {
-        "question": question,
+        "question": cleaned_question,
         "original_question": question,
         "query_type": "document",
         "chat_history": req.chat_history,
@@ -124,6 +201,8 @@ def chat(request: Request, req: ChatRequest):
         "rag_docs_used": [],
         "sql_queries_executed": [],
     }
+
+    timer.__enter__()
 
     try:
         result = None
@@ -163,8 +242,23 @@ def chat(request: Request, req: ChatRequest):
             "sub_results": dict(result.get("sub_results", [])),
         }
 
+        safe_answer, output_warnings = _security.check_output(answer)
+        if output_warnings:
+            logger.warning("Output validation warnings", extra={"extra_data": {"warnings": output_warnings}})
+
+        _cache.set(cleaned_question, safe_answer)
+
+        timer.__exit__(None, None, None)
+        _metrics.record_request(
+            latency_ms=timer.elapsed_ms,
+            error=False,
+            tokens_input=0,
+            tokens_output=0,
+            cache_hit=False,
+        )
+
         return ChatResponse(
-            answer=answer,
+            answer=safe_answer,
             query_type=query_type,
             logs=collected_logs,
             debug=debug,
@@ -173,10 +267,17 @@ def chat(request: Request, req: ChatRequest):
             escalation_reason=result.get("escalation_reason", ""),
             handoff_summary=result.get("handoff_summary", ""),
             sql_result=result.get("sql_result", ""),
+            security_notes=security_notes + output_warnings,
+            cached=False,
+            processing_time_ms=round(timer.elapsed_ms, 2),
         )
 
     except HTTPException:
+        timer.__exit__(None, None, None)
+        _metrics.record_request(latency_ms=timer.elapsed_ms, error=True)
         raise
     except Exception as e:
-        logging.exception("Chat request failed")
+        timer.__exit__(None, None, None)
+        logger.exception("Chat request failed", extra={"extra_data": {"question": req.question[:100]}})
+        _metrics.record_request(latency_ms=timer.elapsed_ms, error=True)
         raise HTTPException(status_code=500, detail=str(e))

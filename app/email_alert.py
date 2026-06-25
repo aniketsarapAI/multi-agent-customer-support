@@ -1,9 +1,10 @@
-import os
 import html
 import smtplib
 import logging
 from datetime import datetime, UTC
 from email.message import EmailMessage
+
+from app.config import settings
 
 SEVERITY_MAP = {
     "complaint": ("HIGH", "#dc2626"),
@@ -137,9 +138,9 @@ def send_escalation_email(
     sql_queries_executed: list[str] | None = None,
     message_count: int = 0,
 ) -> None:
-    user = os.getenv("GMAIL_USER", "")
-    password = os.getenv("GMAIL_APP_PASSWORD", "")
-    to = os.getenv("SUPPORT_EMAIL", "") or user
+    user = settings.gmail_user
+    password = settings.gmail_app_password
+    to = settings.support_email or user
     if not user or not password:
         logging.warning("Gmail not configured — skipping escalation email")
         return
