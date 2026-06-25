@@ -1,119 +1,64 @@
-from langgraph.graph import StateGraph, START, END
-
-from app.state import State
-from app.llm import get_llm
-from app.vector_store import create_retriever
 from app.config import RECURSION_LIMIT
-from app.graph.nodes import (
-    set_retriever as set_rag_retriever,
-    set_llm as set_rag_llm,
-    generate_direct,
-)
-from app.graph.rag_subgraph import build_rag_subgraph
-from app.graph.escalation import (
-    set_llm as set_esc_llm,
-    check_escalation,
-    generate_handoff,
-    route_escalation,
-)
-from app.graph.sql_nodes import (
-    set_llm as set_sql_llm,
-    classify_question,
-    route_after_classify,
-    rewrite_sql_query,
-    decompose_question,
-    route_sub_questions,
-    run_rag_sub,
-    run_sql_sub,
-    synthesise_hybrid,
-    generate_sql,
-    execute_sql_node,
-    visualize_sql_result,
-    summarize_sql_result,
-)
+from app.infrastructure.llm import get_llm
+from app.infrastructure.vector_store import create_retriever
+from app.orchestration.registry import AgentRegistry
+from app.orchestration.planner import Planner
+from app.orchestration.supervisor import build_supervisor_graph
+from app.agents.rag_agent import RAGAgent
+from app.agents.sql_agent import SQLAgent
+from app.agents.conversation_agent import ConversationAgent
+from app.services.security import SecurityPipeline
+from app.services.cache import ResponseCache
+from app.services.memory import InMemoryMemoryService
+from app.services.health import HealthService
+from app.services.monitoring import MetricsCollector
+from app.pipeline.escalation import EscalationChecker
+from app.pipeline.post_processing import PostProcessingPipeline
 
 
-def build_app():
-    llm = get_llm()
-    retriever = create_retriever()
+class Application:
+    """Top-level container for the multi-agent system."""
 
-    set_rag_llm(llm)
-    set_rag_retriever(retriever)
-    set_sql_llm(llm)
-    set_esc_llm(llm)
+    def __init__(self):
+        # Core infrastructure
+        self.llm = get_llm()
+        self.retriever = create_retriever()
 
-    rag_subgraph = build_rag_subgraph()
+        # Services
+        self.security = SecurityPipeline()
+        self.cache = ResponseCache(ttl_seconds=300)
+        self.metrics = MetricsCollector()
+        self.memory = InMemoryMemoryService()
 
-    g = StateGraph(State)
+        # Agents
+        self.registry = AgentRegistry()
+        self.registry.register("rag", RAGAgent(self.llm, self.retriever))
+        self.registry.register("sql", SQLAgent(self.llm))
+        self.registry.register("conversation", ConversationAgent(self.llm))
 
-    # ── classify ──
-    g.add_node("classify_question", classify_question)
+        # Orchestration
+        self.planner = Planner(self.llm)
 
-    # ── RAG path (compiled subgraph) ──
-    g.add_node("rag_pipeline", rag_subgraph)
+        # Supervisor graph (compiled)
+        self.supervisor = build_supervisor_graph(self.registry, self.llm)
+        self.supervisor.recursion_limit = RECURSION_LIMIT
 
-    # ── SQL path (linear, single question) ──
-    g.add_node("rewrite_sql_query", rewrite_sql_query)
-    g.add_node("generate_sql", generate_sql)
-    g.add_node("execute_sql", execute_sql_node)
-    g.add_node("visualize_sql", visualize_sql_result)
-    g.add_node("summarize_sql", summarize_sql_result)
+        # Pipeline
+        self.escalation = EscalationChecker(self.llm)
+        self.post_processing = PostProcessingPipeline(self.security, self.escalation)
 
-    # ── Hybrid path (fan-out / fan-in) ──
-    g.add_node("decompose_question", decompose_question)
-    g.add_node("run_rag_sub", run_rag_sub)
-    g.add_node("run_sql_sub", run_sql_sub)
-    g.add_node("synthesise_hybrid", synthesise_hybrid)
+        # Health
+        self.health_service = HealthService(
+            registry=self.registry,
+            memory=self.memory,
+            cache=self.cache,
+        )
 
-    # ── Conversation path (direct answer, no retrieval) ──
-    g.add_node("generate_direct", generate_direct)
-
-    # ── Top-level edges ──
-    g.add_edge(START, "classify_question")
-
-    g.add_conditional_edges(
-        "classify_question",
-        route_after_classify,
-        {
-            "retrieve": "rag_pipeline",
-            "rewrite_sql_query": "rewrite_sql_query",
-            "decompose_question": "decompose_question",
-            "generate_direct": "generate_direct",
-        },
-    )
-
-    g.add_edge("rag_pipeline", "check_escalation")
-    g.add_edge("generate_direct", "check_escalation")
-
-    g.add_edge("rewrite_sql_query", "generate_sql")
-    g.add_edge("generate_sql", "execute_sql")
-    g.add_edge("execute_sql", "visualize_sql")
-    g.add_edge("visualize_sql", "summarize_sql")
-    g.add_edge("summarize_sql", "check_escalation")
-
-    # ── Hybrid fan-out ──
-    g.add_conditional_edges(
-        "decompose_question",
-        route_sub_questions,
-        ["run_rag_sub", "run_sql_sub"],
-    )
-
-    # ── Hybrid fan-in ──
-    g.add_edge("run_rag_sub", "synthesise_hybrid")
-    g.add_edge("run_sql_sub", "synthesise_hybrid")
-    g.add_edge("synthesise_hybrid", "check_escalation")
-
-    # ── Escalation check (runs after every answer) ──
-    g.add_node("check_escalation", check_escalation)
-    g.add_node("generate_handoff", generate_handoff)
-
-    g.add_conditional_edges(
-        "check_escalation",
-        route_escalation,
-        {"generate_handoff": "generate_handoff", END: END},
-    )
-    g.add_edge("generate_handoff", END)
-
-    app = g.compile()
-    app.recursion_limit = RECURSION_LIMIT
-    return app
+    @property
+    def ready(self) -> bool:
+        return all([
+            self.supervisor is not None,
+            self.security is not None,
+            self.cache is not None,
+            self.metrics is not None,
+        ])

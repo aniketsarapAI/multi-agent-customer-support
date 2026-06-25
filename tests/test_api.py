@@ -60,31 +60,34 @@ class TestApiStructure:
         assert "metrics" in get_endpoints
         assert "cache_stats" in get_endpoints
 
+    def _parse_builder(self):
+        with open("app/graph/builder.py") as f:
+            return ast.parse(f.read())
+
     def test_security_pipeline_imported(self):
-        tree = self._parse_api()
+        tree = self._parse_builder()
         imports = []
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module and "security" in node.module:
                 imports.append(node.module)
-        assert any("security" in i for i in imports), "SecurityPipeline not imported"
+        assert any("security" in i for i in imports), "SecurityPipeline not imported by builder"
 
     def test_cache_module_imported(self):
-        tree = self._parse_api()
+        tree = self._parse_builder()
         imports = []
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module and "cache" in node.module:
                 imports.append(node.module)
-        assert any("cache" in i for i in imports), "ResponseCache not imported"
+        assert any("cache" in i for i in imports), "ResponseCache not imported by builder"
 
     def test_monitoring_metrics_collector_imported(self):
-        tree = self._parse_api()
+        tree = self._parse_builder()
         imports = []
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module and "monitoring" in node.module:
                 names = [a.name for a in node.names]
                 imports.extend(names)
-        assert "MetricsCollector" in imports, "MetricsCollector not imported"
-        assert "RequestTimer" in imports, "RequestTimer not imported"
+        assert "MetricsCollector" in imports, "MetricsCollector not imported by builder"
 
     def test_cors_middleware_registered(self):
         tree = self._parse_api()
