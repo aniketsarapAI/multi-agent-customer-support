@@ -19,17 +19,18 @@ MAX_REACT_ITERATIONS = 5
 _AGENT_TARGET = {
     "rag": "rag_agent",
     "sql": "sql_agent",
+    "conversation": "conversation_agent",
 }
 
 
 class ToolCall(BaseModel):
-    tool: Literal["rag", "sql"]
+    tool: Literal["rag", "sql", "conversation"]
     query: str = Field(description="The specific question to ask this tool")
 
 
 class SupervisorDecision(BaseModel):
     action: Literal["single", "parallel", "respond"]
-    tool: Optional[Literal["rag", "sql"]] = Field(None, description="Required if action='single'")
+    tool: Optional[Literal["rag", "sql", "conversation"]] = Field(None, description="Required if action='single'")
     query: Optional[str] = Field(None, description="Required if action='single'")
     calls: Optional[list[ToolCall]] = Field(None, description="Required if action='parallel'")
     answer: Optional[str] = Field(None, description="Required if action='respond'")
@@ -125,7 +126,7 @@ def build_react_supervisor_graph(registry: AgentRegistry, llm, escalation_checke
             sends.append(Send(target, sub_state))
         return sends
 
-    _AGENT_KEY = {"rag_agent": "rag", "sql_agent": "sql"}
+    _AGENT_KEY = {"rag_agent": "rag", "sql_agent": "sql", "conversation_agent": "conversation"}
 
     def make_agent_node(agent_name: str):
         def agent_node(state: SupervisorState):

@@ -380,7 +380,8 @@ react_supervisor_prompt = ChatPromptTemplate.from_messages(
             "by coordinating specialized tools.\n\n"
             "You have these tools:\n"
             "- rag(question: str) — Searches company documents (policies, benefits, refunds, HR, leadership, etc.)\n"
-            "- sql(question: str) — Queries the e-commerce database (sales, revenue, orders, customers, products, categories)\n\n"
+            "- sql(question: str) — Queries the e-commerce database (sales, revenue, orders, customers, products, categories)\n"
+            "- conversation(question: str) — Remembers previous conversation context (user identity, preferences, past questions)\n\n"
             "Previous conversation with the user:\n"
             "{chat_history}\n\n"
             "Current question: {question}\n\n"
@@ -395,9 +396,9 @@ react_supervisor_prompt = ChatPromptTemplate.from_messages(
             "- Use the conversation history to understand context and follow-up questions\n\n"
             "Respond with a JSON object in one of these formats:\n\n"
             "1. Single tool call:\n"
-            '{{"action": "single", "tool": "rag"|"sql", "query": "specific question for the tool"}}\n\n'
+            '{{"action": "single", "tool": "rag"|"sql"|"conversation", "query": "specific question for the tool"}}\n\n'
             "2. Parallel tool calls (for compound questions):\n"
-            '{{"action": "parallel", "calls": [{{"tool": "rag"|"sql", "query": "sub-question 1"}}, {{"tool": "rag"|"sql", "query": "sub-question 2"}}]}}\n\n'
+            '{{"action": "parallel", "calls": [{{"tool": "rag"|"sql"|"conversation", "query": "sub-question 1"}}, {{"tool": "rag"|"sql"|"conversation", "query": "sub-question 2"}}]}}\n\n'
             "3. Direct response:\n"
             '{{"action": "respond", "answer": "your complete answer to the user"}}\n\n'
             "IMPORTANT: Return ONLY valid JSON. No extra text, no markdown formatting.",
