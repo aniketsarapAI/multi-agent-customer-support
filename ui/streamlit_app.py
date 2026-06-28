@@ -123,7 +123,11 @@ with st.sidebar:
     st.caption(f"Session: `{st.session_state.get('session_id', '...')[:8]}`")
 
 if "session_id" not in st.session_state:
-    st.session_state.session_id = str(uuid4())
+    if "session_id" in st.query_params:
+        st.session_state.session_id = st.query_params["session_id"]
+    else:
+        st.session_state.session_id = str(uuid4())
+        st.query_params["session_id"] = st.session_state.session_id
 
 if "conversation_id" not in st.session_state:
     st.session_state.conversation_id = str(uuid4())
