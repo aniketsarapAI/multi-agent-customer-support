@@ -115,12 +115,15 @@ with st.sidebar:
         st.rerun()
     st.divider()
     st.markdown("**View Mode**")
-    # Demo/developer visibility controls.
-    # Production deployments should default both to False.
     st.checkbox("Show agent execution trace", value=True, key="show_trace")
     st.checkbox("Show debug panel", value=False, key="show_debug")
     if st.session_state.show_trace or st.session_state.show_debug:
         st.caption("Demo / developer features enabled")
+    st.divider()
+    st.caption(f"Session: `{st.session_state.get('session_id', '...')[:8]}`")
+
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid4())
 
 if "conversation_id" not in st.session_state:
     st.session_state.conversation_id = str(uuid4())
@@ -152,6 +155,7 @@ if force_esc and st.session_state.history:
         try:
             resp = requests.post(
                 f"{API_URL}/chat",
+                headers={"X-Session-ID": st.session_state.session_id},
                 json={
                     "question": "I need to speak to a human agent right now",
                     "conversation_id": st.session_state.conversation_id,
@@ -184,6 +188,7 @@ if prompt := st.chat_input("Ask a question..."):
         try:
             resp = requests.post(
                 f"{API_URL}/chat",
+                headers={"X-Session-ID": st.session_state.session_id},
                 json={
                     "question": prompt,
                     "conversation_id": st.session_state.conversation_id,

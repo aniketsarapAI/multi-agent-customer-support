@@ -131,6 +131,10 @@ def chat(request: Request, req: ChatRequest):
     if _app is None or not _app.ready:
         raise HTTPException(status_code=503, detail="Server not ready")
 
+    session_id = request.headers.get("X-Session-ID")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="Missing X-Session-ID header")
+
     question = req.question.strip()
     if not question:
         raise HTTPException(status_code=422, detail="Question must not be empty")
@@ -162,10 +166,10 @@ def chat(request: Request, req: ChatRequest):
             processing_time_ms=0,
         )
 
-    # ── Load conversation memory ──
+    # ── Load conversation memory (scoped to session) ──
     request_id = str(uuid4())
     conversation_id = req.conversation_id or str(uuid4())
-    saved_state = _app.memory.load(conversation_id)
+    saved_state = _app.memory.load(session_id, conversation_id)
     saved_history = saved_state.get("chat_history", [])
     # Prefer the longer history (handles client-side truncation)
     merged_history = req.chat_history if len(req.chat_history) >= len(saved_history) else saved_history
@@ -198,7 +202,7 @@ def chat(request: Request, req: ChatRequest):
 
     try:
         result = None
-        config = {"configurable": {"thread_id": conversation_id}}
+        config = {"configurable": {"thread_id": f"{session_id}:{conversation_id}"}}
         for output in _app.supervisor.stream(initial_state, config=config, stream_mode="values"):
             result = output
             new_logs = output.get("logs", [])
@@ -252,6 +256,13 @@ def chat(request: Request, req: ChatRequest):
 
         # ── Cache ──
         _app.cache.set(cleaned_question, safe_answer)
+
+        # ── Persist conversation history ──
+        updated_history = merged_history + [
+            {"role": "user", "content": cleaned_question},
+            {"role": "assistant", "content": safe_answer},
+        ]
+        _app.memory.save(session_id, conversation_id, {"chat_history": updated_history})
 
         timer.__exit__(None, None, None)
         _app.metrics.record_request(

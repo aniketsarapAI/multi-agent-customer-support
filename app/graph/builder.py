@@ -4,7 +4,6 @@ from app.config import RECURSION_LIMIT, settings
 from app.infrastructure.llm import get_llm, get_grader_llm
 from app.infrastructure.vector_store import create_retriever
 from app.orchestration.registry import AgentRegistry
-from langgraph.checkpoint.memory import MemorySaver
 from app.orchestration.supervisor_react import build_react_supervisor_graph
 from app.agents.rag_agent import RAGAgent
 from app.agents.sql_agent import SQLAgent
@@ -49,7 +48,11 @@ class Application:
             logger.info("Using Redis-backed conversation memory")
         else:
             self.memory = InMemoryMemoryService()
-            logger.info("Using in-memory conversation memory (Redis unavailable)")
+            logger.warning(
+                "Redis unreachable at %s. Using in-memory fallback \u2014 "
+                "conversation history will be lost on restart!",
+                redis_url,
+            )
 
         # Agents
         self.registry = AgentRegistry()
@@ -58,8 +61,18 @@ class Application:
         self.registry.register("sql", SQLAgent(self.llm))
         self.registry.register("conversation", ConversationAgent(self.llm))
 
-        # Orchestration
-        self.checkpointer = MemorySaver()
+        # Orchestration — persistent checkpointer (survives restarts)
+        if settings.checkpoint_backend == "redis":
+            from langgraph.checkpoint.redis import RedisSaver
+            self.checkpointer = RedisSaver(settings.redis_url)
+        else:
+            import sqlite3
+            from langgraph.checkpoint.sqlite import SqliteSaver
+            conn = sqlite3.connect(
+                settings.checkpoint_db_path or "checkpoints.db",
+                check_same_thread=False,
+            )
+            self.checkpointer = SqliteSaver(conn)
         self.escalation = EscalationChecker(self.llm)
 
         # Supervisor graph (reAct loop with parallel Send)

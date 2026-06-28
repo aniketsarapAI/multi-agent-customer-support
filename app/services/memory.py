@@ -6,10 +6,10 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryService(Protocol):
-    def load(self, conversation_id: str) -> dict:
+    def load(self, session_id: str, conversation_id: str) -> dict:
         ...
 
-    def save(self, conversation_id: str, state: dict) -> None:
+    def save(self, session_id: str, conversation_id: str, state: dict) -> None:
         ...
 
 
@@ -17,11 +17,11 @@ class InMemoryMemoryService:
     def __init__(self):
         self._store: dict[str, dict] = {}
 
-    def load(self, conversation_id: str) -> dict:
-        return self._store.get(conversation_id, {})
+    def load(self, session_id: str, conversation_id: str) -> dict:
+        return self._store.get(f"{session_id}:{conversation_id}", {})
 
-    def save(self, conversation_id: str, state: dict) -> None:
-        self._store[conversation_id] = state
+    def save(self, session_id: str, conversation_id: str, state: dict) -> None:
+        self._store[f"{session_id}:{conversation_id}"] = state
 
 
 _KEY_PREFIX = "mem:conv:"
@@ -47,14 +47,14 @@ class RedisMemoryService:
     def available(self) -> bool:
         return self._redis is not None
 
-    def _key(self, conversation_id: str) -> str:
-        return f"{_KEY_PREFIX}{conversation_id}"
+    def _key(self, session_id: str, conversation_id: str) -> str:
+        return f"{_KEY_PREFIX}{session_id}:{conversation_id}"
 
-    def load(self, conversation_id: str) -> dict:
+    def load(self, session_id: str, conversation_id: str) -> dict:
         if not self.available:
             return {}
         try:
-            data = self._redis.get(self._key(conversation_id))
+            data = self._redis.get(self._key(session_id, conversation_id))
             if data is None:
                 return {}
             return json.loads(data)
@@ -62,10 +62,10 @@ class RedisMemoryService:
             logger.warning("Redis memory load failed: %s", e)
             return {}
 
-    def save(self, conversation_id: str, state: dict) -> None:
+    def save(self, session_id: str, conversation_id: str, state: dict) -> None:
         if not self.available:
             return
         try:
-            self._redis.setex(self._key(conversation_id), self._ttl, json.dumps(state))
+            self._redis.setex(self._key(session_id, conversation_id), self._ttl, json.dumps(state))
         except Exception as e:
             logger.warning("Redis memory save failed: %s", e)

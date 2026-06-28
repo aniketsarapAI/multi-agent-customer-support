@@ -56,6 +56,14 @@ class Settings(BaseSettings):
     semantic_cache_threshold: float = 0.78
     freq_questions_path: str = "freq_questions.json"
 
+    # Pinecone
+    pinecone_api_key: str = ""
+    pinecone_index_name: str = "selfrag"
+
+    # Checkpointing
+    checkpoint_backend: str = "sqlite"  # "sqlite" | "redis"
+    checkpoint_db_path: str = "checkpoints.db"
+
     # Application
     app_env: str = "development"
     log_level: str = "INFO"

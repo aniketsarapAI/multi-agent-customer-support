@@ -6,3 +6,5 @@ venv/
 .DS_Store
 .vscode/
 faiss_index/
+checkpoints.db*
+*.whl

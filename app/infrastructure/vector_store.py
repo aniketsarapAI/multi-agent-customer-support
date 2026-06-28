@@ -1,13 +1,13 @@
 from pathlib import Path
+from typing import Any, List
 
 from langchain_community.document_loaders import PyPDFLoader
-from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
+from pinecone import Pinecone, ServerlessSpec
 
-from app.config import BASE_DIR, CHUNK_SIZE, CHUNK_OVERLAP, RETRIEVER_K
+from app.config import BASE_DIR, CHUNK_SIZE, CHUNK_OVERLAP, RETRIEVER_K, settings
 from app.infrastructure.llm import get_embeddings
-
-FAISS_INDEX_DIR = BASE_DIR / "faiss_index"
 
 
 def load_documents() -> list:
@@ -30,17 +30,72 @@ def split_documents(docs: list) -> list:
     return splitter.split_documents(docs)
 
 
+EMBEDDING_DIM = 768
+
+
+class PineconeRetriever:
+    """Lightweight retriever backed by Pinecone.
+
+    Quacks like a LangChain BaseRetriever — supports ``.invoke(query)``
+    which is the only interface the graph code uses.
+    """
+
+    def __init__(self, index: Any, embeddings: Any, k: int = 4):
+        self._index = index
+        self._embeddings = embeddings
+        self.k = k
+
+    def invoke(self, query: str) -> List[Document]:
+        query_vector = self._embeddings.embed_query(query)
+        results = self._index.query(
+            vector=query_vector,
+            top_k=self.k,
+            include_metadata=True,
+        )
+        docs = []
+        for match in results.matches:
+            metadata = dict(match.metadata) if match.metadata else {}
+            text = metadata.pop("text", "")
+            docs.append(Document(page_content=text, metadata=metadata))
+        return docs
+
+
 def create_retriever():
     embeddings = get_embeddings()
 
-    if FAISS_INDEX_DIR.exists():
-        vector_store = FAISS.load_local(
-            str(FAISS_INDEX_DIR), embeddings, allow_dangerous_deserialization=True
+    pc = Pinecone(api_key=settings.pinecone_api_key)
+
+    if settings.pinecone_index_name not in pc.list_indexes().names():
+        pc.create_index(
+            name=settings.pinecone_index_name,
+            dimension=EMBEDDING_DIM,
+            metric="cosine",
+            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
         )
-    else:
+
+    index = pc.Index(settings.pinecone_index_name)
+
+    stats = index.describe_index_stats()
+    if stats.total_vector_count == 0:
         docs = load_documents()
         chunks = split_documents(docs)
-        vector_store = FAISS.from_documents(chunks, embeddings)
-        vector_store.save_local(str(FAISS_INDEX_DIR))
 
-    return vector_store.as_retriever(search_kwargs={"k": RETRIEVER_K})
+        vectors = []
+        for i, chunk in enumerate(chunks):
+            vector = embeddings.embed_query(chunk.page_content)
+            vectors.append(
+                {
+                    "id": f"doc-{i}",
+                    "values": vector,
+                    "metadata": {
+                        "text": chunk.page_content,
+                        "source": str(chunk.metadata.get("source", "")),
+                        "page": chunk.metadata.get("page", 0),
+                    },
+                }
+            )
+
+        for i in range(0, len(vectors), 100):
+            index.upsert(vectors=vectors[i : i + 100])
+
+    return PineconeRetriever(index=index, embeddings=embeddings, k=RETRIEVER_K)

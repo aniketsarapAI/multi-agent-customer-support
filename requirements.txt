@@ -16,3 +16,4 @@ uvicorn>=0.30.0
 slowapi>=0.1.9
 pymysql
 redis[hiredis]
+pinecone-client>=3,<4
