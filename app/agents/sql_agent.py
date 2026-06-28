@@ -17,11 +17,17 @@ class SQLAgent(BaseAgent):
         initial_state: SQLAgentState = {
             "request_id": request_id,
             "question": question,
+            "original_question": question,
+            "chat_history": chat_history,
             "answer": "",
             "sql_query": "",
             "sql_result": "",
             "db_error": "",
             "visualization_spec": None,
+            "issup": "",
+            "isuse": "",
+            "use_reason": "",
+            "retry_count": 0,
             "logs": [],
         }
 
@@ -37,6 +43,9 @@ class SQLAgent(BaseAgent):
             sql_result=result.get("sql_result", ""),
             db_error=result.get("db_error", ""),
             visualization_spec=result.get("visualization_spec"),
+            issup=result.get("issup", ""),
+            isuse=result.get("isuse", ""),
+            use_reason=result.get("use_reason", ""),
         )
 
         success = not bool(result.get("db_error"))

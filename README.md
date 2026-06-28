@@ -497,7 +497,7 @@ selfragmcp/
 │   ├── test_security.py
 │   ├── test_cache.py
 │   └── test_api.py
-├── main.py                   # CLI entry point
+├── app/api.py                # FastAPI server entry point
 ├── Dockerfile                # API container (non-root user, HEALTHCHECK) (Jun 25)
 ├── Dockerfile.ui             # UI container (Streamlit)
 ├── docker-compose.yml        # Multi-service orchestration (healthchecks) (Jun 25)

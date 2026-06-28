@@ -21,10 +21,12 @@ from app.agents.graph.nodes import (
 )
 
 
-def build_rag_subgraph(llm, retriever):
+def build_rag_subgraph(llm, retriever, grader_llm=None):
     g = StateGraph(RAGAgentState)
 
-    g.add_node("decide_retrieval", make_decide_retrieval(llm))
+    from app.infrastructure.llm import get_grader_llm
+    grader = grader_llm or get_grader_llm()
+    g.add_node("decide_retrieval", make_decide_retrieval(grader))
     g.add_node("generate_direct", make_generate_direct(llm))
     g.add_node("retrieve", make_retrieve(retriever))
     g.add_node("is_relevant", make_is_relevant(llm))

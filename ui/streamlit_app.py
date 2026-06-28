@@ -1,5 +1,7 @@
 import os
 import re
+from uuid import uuid4
+
 import requests
 import streamlit as st
 
@@ -128,6 +130,9 @@ with st.sidebar:
     if st.session_state.show_trace or st.session_state.show_debug:
         st.caption("Demo / developer features enabled")
 
+if "conversation_id" not in st.session_state:
+    st.session_state.conversation_id = str(uuid4())
+
 if "history" not in st.session_state:
     st.session_state.history = []
 
@@ -157,6 +162,7 @@ if force_esc and st.session_state.history:
                 f"{API_URL}/chat",
                 json={
                     "question": "I need to speak to a human agent right now",
+                    "conversation_id": st.session_state.conversation_id,
                     "chat_history": chat_history,
                 },
                 timeout=120,
@@ -188,6 +194,7 @@ if prompt := st.chat_input("Ask a question..."):
                 f"{API_URL}/chat",
                 json={
                     "question": prompt,
+                    "conversation_id": st.session_state.conversation_id,
                     "chat_history": chat_history,
                 },
                 timeout=120,

@@ -14,9 +14,12 @@ decide_retrieval_prompt = ChatPromptTemplate.from_messages(
             "shipping policies, product availability explanations.\n"
             "- should_retrieve=False only for general knowledge that no company "
             "documents would cover.\n"
-            "- If unsure (especially for support/FAQ-type questions), choose True.",
+            "- If unsure (especially for support/FAQ-type questions), choose True.\n"
+            "- Consider the conversation history: follow-up questions like "
+            "'tell me more about that' or 'what about the second option?' "
+            "should_retrieve=True since they reference prior context.",
         ),
-        ("human", "Question: {question}"),
+        ("human", "Conversation history:\n{chat_history}\n\nQuestion: {question}"),
     ]
 )
 
@@ -24,13 +27,13 @@ direct_generation_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "Answer using only your general knowledge.\n"
-            "If it requires specific company info, say:\n"
-            "'I don't know based on my general knowledge.'\n"
-            "If the user is expressing emotion, feedback, or conversational intent "
-            "(thanks, frustration, clarification request) rather than requesting "
-            "information, respond naturally and briefly without fabricating facts.\n"
-            "Use conversation history when relevant. Focus primarily on the current question.",
+            "You are Bloomly Assistant, a friendly support bot for Bloomly.\n\n"
+            "Rules:\n"
+            "- Greetings, thanks, small talk, emotional expressions → respond warmly "
+            "in 1 sentence.\n"
+            "- For anything that isn't a greeting/thanks/emotion, say in 1 sentence:\n"
+            "  \"Let me connect you to the right resource for that!\"\n"
+            "- Be warm. Keep it to 1 sentence. Use conversation history when relevant.",
         ),
         ("human", "Conversation History:\n{chat_history}\n\nCurrent Question:\n{question}"),
     ]
@@ -151,112 +154,7 @@ isuse_prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
-classify_question_prompt_v2 = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            "Classify the user's question into one of three types.\n"
-            "Return JSON with key: query_type (string).\n\n"
-            "Types:\n"
-            "- \"document\": Question about company policies, HR, pricing, profile, strategy,\n"
-            "  benefits, contracts, or any topic found in company PDF documents.\n"
-            "- \"database\": Question about e-commerce data: customers, orders, products, sales,\n"
-            "  revenue, categories, sellers, payments, reviews, or any analytics/numbers\n"
-            "  that require querying structured database tables.\n"
-            "- \"hybrid\": Question has MULTIPLE independent parts spanning BOTH types,\n"
-            "  OR has multiple specific items (categories, products, etc.) that each need\n"
-            "  their own database query (e.g., 'top item from beauty, watches, and bedding'\n"
-            "  → 3 independent SQL sub-queries).\n"
-            "- \"conversation\": User is expressing emotion, feedback, or conversational intent\n"
-            "  rather than requesting information. Examples: 'This is frustrating', 'Thanks',\n"
-            "  'Okay', 'That didn't help', 'I want a human', 'Can you explain that?',\n"
-            "  'What do you mean?', 'Tell me more'.\n\n"
-            "Examples:\n"
-            "  'What is the refund policy?' -> document\n"
-            "  'Who is the CEO?' -> document\n"
-            "  'How do I reset my password?' -> document\n"
-            "  'How can I know if an item is in stock?' -> document\n"
-            "  'How many customers do we have?' -> database\n"
-            "  'Top selling product categories?' -> database\n"
-            "  'Average order value?' -> database\n"
-            "  'What is the stock status of product X?' -> database\n"
-            "  'How many products are in stock?' -> database\n"
-            "  'What products are currently available?' -> database\n"
-            "  'What is the notice period?' -> document\n"
-            "  'What is the refund policy and how many customers?' -> hybrid\n"
-            "  'Tell me about the privacy policy and total revenue' -> hybrid\n"
-            "  'Top selling product in Beauty and Health?' -> database\n"
-            "  'Best selling item by category?' -> database\n"
-            "  'Top selling item in beauty, watches, and bedding?' -> hybrid (3 separate sub-queries)\n"
-            "  'Sales from electronics, fashion, and furniture?' -> hybrid (3 separate sub-queries)\n"
-            "  'This is frustrating' -> conversation\n"
-            "  'Thanks' -> conversation\n"
-            "  'That didn't help' -> conversation\n"
-            "  'I want a human' -> conversation\n"
-            "  'Can you explain that?' -> conversation\n"
-            "If the question asks about sales, revenue, top products, or categories without policy/docs, return 'database'.\n"
-            "EXCEPT: if the question enumerates 3+ specific categories/items that need separate queries, return 'hybrid'.\n"
-            "If unsure or the question is general, return 'document'.\n"
-            "Use conversation history when relevant. Focus primarily on the current question.",
-        ),
-        ("human", "Conversation History:\n{chat_history}\n\nCurrent Question:\n{question}"),
-    ]
-)
 
-decompose_question_prompt = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            "The user's question spans multiple topics. Split it into individual sub-questions.\n"
-            "Return JSON with key: sub_questions (list of objects).\n\n"
-            "Each object must have:\n"
-            "- id: string like \"doc_0\", \"sql_0\", \"doc_1\", etc. Prefix with \"doc_\" for document questions, \"sql_\" for database questions.\n"
-            "- question: the individual sub-question text\n"
-            "- type: \"document\" or \"database\"\n\n"
-            "How to decide type:\n"
-            "- \"database\": Questions about sales, revenue, orders, customers, products, categories,\n"
-            "  quantities, prices, or any data that lives in the e-commerce database tables.\n"
-            "- \"document\": Questions about company policies, HR, benefits, refund policies,\n"
-            "  pricing plans, leadership, or any topic found in company PDF documents.\n\n"
-            "Examples:\n"
-            "  'What is the top selling product?' -> database (id: sql_0)\n"
-            "  'How many customers?' -> database (id: sql_0)\n"
-            "  'Show me revenue by category' -> database (id: sql_0)\n"
-            "  'What is the refund policy?' -> document (id: doc_0)\n"
-            "  'Who is the CEO?' -> document (id: doc_0)\n"
-            "  'Tell me about benefits' -> document (id: doc_0)\n"
-            "  'Top item from beauty, watches, and bedding' -> \n"
-            "    - database 'top item in beauty' (id: sql_0)\n"
-            "    - database 'top item in watches' (id: sql_1)\n"
-            "    - database 'top item in bedding' (id: sql_2)\n\n"
-            "Rules:\n"
-            "- Split at conjunctions (and, or, also, additionally, what about, etc.).\n"
-            "- Each sub-question should be self-contained and grammatically complete.\n"
-            "- Preserve all entities and details in each sub-question.\n"
-            "- Do NOT merge unrelated sub-questions.\n"
-            "- If the question is already atomic (single topic), return an empty list.\n"
-            "Use conversation history when relevant. Focus primarily on the current question.",
-        ),
-        ("human", "Conversation History:\n{chat_history}\n\nCurrent Question:\n{question}"),
-    ]
-)
-
-synthesise_hybrid_prompt = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            "You are a helpful assistant. Combine the following partial answers into one coherent response.\n"
-            "Do not mention that the answers came from different sources.\n"
-            "Present the information naturally as if it's a single answer.",
-        ),
-        (
-            "human",
-            "Original question: {question}\n\n"
-            "Partial answers:\n{partial_answers}\n\n"
-            "Combine into a single natural response:",
-        ),
-    ]
-)
 
 sql_rewrite_prompt = ChatPromptTemplate.from_messages(
     [
@@ -419,7 +317,11 @@ escalation_check_prompt = ChatPromptTemplate.from_messages(
             "- isuse: {isuse}\n\n"
             "CRITICAL RULE: If issup is 'fully_supported' AND isuse is 'useful', "
             "the question was successfully answered. Do NOT escalate for 'unresolved_issue' — "
-            "the user may dislike the answer, but that is not an escalation trigger.\n\n"
+            "the user may dislike the answer, but that is not an escalation trigger.\n"
+            "CRITICAL RULE: If both issup and isuse are empty strings, the conversation agent "
+            "handled the turn without document support. This means the user's query was "
+            "non-informational (greeting, emotion, or small talk). Do NOT escalate — "
+            "a single unanswered question is a routing issue, not an escalation trigger.\n\n"
             "Reason must be one of:\n"
             "human_requested, complaint, frustration, repeated_negative_sentiment, unresolved_issue, none",
         ),
@@ -465,7 +367,40 @@ handoff_summary_prompt = ChatPromptTemplate.from_messages(
             "Current turn documents: {current_doc_titles}\n\n"
             "Current turn SQL query: {current_sql_query}\n\n"
             "Recent documents consulted (last 5 turns): {rag_docs_used}\n\n"
-            "Recent SQL queries executed (last 5 turns): {sql_queries_executed}",
+             "Recent SQL queries executed (last 5 turns): {sql_queries_executed}",
+        ),
+    ]
+)
+
+react_supervisor_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "You are a supervisor agent for Bloomly customer support. Your job is to answer user questions "
+            "by coordinating specialized tools.\n\n"
+            "You have these tools:\n"
+            "- rag(question: str) — Searches company documents (policies, benefits, refunds, HR, leadership, etc.)\n"
+            "- sql(question: str) — Queries the e-commerce database (sales, revenue, orders, customers, products, categories)\n\n"
+            "Previous conversation with the user:\n"
+            "{chat_history}\n\n"
+            "Current question: {question}\n\n"
+            "Previous tool calls and results:\n"
+            "{tool_results}\n\n"
+            "Rules:\n"
+            "- If the question has multiple independent parts, call tools in PARALLEL to save time\n"
+            "- If the question needs one piece of information, call a SINGLE tool\n"
+            "- If you already have enough information or the question is conversational, RESPOND directly\n"
+            "- If a tool fails, decide whether to retry or answer with what you have\n"
+            "- Never ask the user for clarification — use the tools to find the answer\n"
+            "- Use the conversation history to understand context and follow-up questions\n\n"
+            "Respond with a JSON object in one of these formats:\n\n"
+            "1. Single tool call:\n"
+            '{{"action": "single", "tool": "rag"|"sql", "query": "specific question for the tool"}}\n\n'
+            "2. Parallel tool calls (for compound questions):\n"
+            '{{"action": "parallel", "calls": [{{"tool": "rag"|"sql", "query": "sub-question 1"}}, {{"tool": "rag"|"sql", "query": "sub-question 2"}}]}}\n\n'
+            "3. Direct response:\n"
+            '{{"action": "respond", "answer": "your complete answer to the user"}}\n\n'
+            "IMPORTANT: Return ONLY valid JSON. No extra text, no markdown formatting.",
         ),
     ]
 )

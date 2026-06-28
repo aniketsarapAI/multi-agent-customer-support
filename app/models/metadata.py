@@ -16,6 +16,9 @@ class SQLMetadata(BaseModel):
     sql_result: str = ""
     db_error: str = ""
     visualization_spec: dict | None = None
+    issup: str = ""
+    isuse: str = ""
+    use_reason: str = ""
 
 
 class ConversationMetadata(BaseModel):

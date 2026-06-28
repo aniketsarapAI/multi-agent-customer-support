@@ -4,91 +4,154 @@
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│                         main.py / streamlit_app.py       │
-│  ┌─────────────────────────────────────────────────┐     │
-│  │  app.stream(stream_mode="values")               │     │
-│  │  + TokenCollector callback for LLM token streaming│    │
-│  └──────┬──────────────────────────────────────────┘     │
-└─────────┼────────────────────────────────────────────────┘
-          │ question
-          ▼
+│                    app/api.py (FastAPI)                   │
+│  POST /chat → Application.supervisor.stream(...)          │
+│  config={"configurable": {"thread_id": conversation_id}}  │
+│  SqliteSaver checkpointer for multi-turn continuity      │
+└──────────────────────────┬───────────────────────────────┘
+                           │ question + chat_history
+                           ▼
 ┌──────────────────────────────────────────────────────────┐
-│  Unified LangGraph (StateGraph[State])                   │
+│  Planner (app/orchestration/planner.py)                  │
+│  1 LLM call: classify → query_type                       │
+│  document / database / hybrid / conversation             │
+│  → ExecutionPlan(agents, needs_synthesis, cacheable)     │
+└──────────────────────────┬───────────────────────────────┘
+                           │ ExecutionPlan
+                           ▼
+┌──────────────────────────────────────────────────────────┐
+│  Supervisor Graph (StateGraph[SupervisorState])          │
+│  Checkpointer: SqliteSaver (thread_id = conversation_id) │
 │                                                          │
 │  ┌──────────────┐                                        │
-│  │ classifY     │  router: document / database / hybrid  │
+│  │ decompose    │  hybrid only: LLM splits question      │
 │  └──┬───┬───┬──┘                                         │
 │     │   │   │                                             │
-│     │   │   └──────────────────┐                          │
-│     │   │                      │                          │
-│  ┌──▼──┐   ┌──────────────┐   ┌▼──────────┐              │
-│  │ RAG │   │ SQL Path     │   │ Decompose  │  hybrid      │
-│  │ sub-│   │              │   └──┬───┬─────┘              │
-│  │graph│   │ rewrite_sql  │      │   │                    │
-│  │     │   │ generate_sql │   ┌──▼───▼──┐                 │
-│  │     │   │ execute_sql  │   │ Send × N │  parallel      │
-│  │     │   │ visualize_   │   └──┬───┬───┘                 │
-│  │     │   │   sql        │      │   │                     │
-│  │     │   │ summarize_   │   ┌──▼───▼──┐                 │
-│  │     │   │   sql        │   │ run_rag_ │  run_sql_sub    │
-│  └──────┘   └──────────────┘   │ sub      │                │
-│       │            │           └─────┬─────┘                │
-│       └──────┬─────┘                 │                      │
-│              │                 ┌──────▼──────┐              │
-│              └─────────────────►  synthesise  │  fan-in     │
-│                                └──────┬──────┘              │
-│                                       │                     │
-│                                    END│                     │
-│                                       │                     │
-│  Node outputs include "logs" entries  │                     │
-│  and "visualization_spec" for charts  │                     │
+│     │   │   └──────────────┐                              │
+│     │   │                  │ (no decomposition)           │
+│  ┌──▼──┐   ┌──────────┐   ┌▼──────────┐                  │
+│  │Send │   │ Send     │   │ reclassify│  2nd LLM call    │
+│  │×N   │   │ × agents │   └──┬───┬────┘                  │
+│  └──┬──┘   └────┬─────┘      │   │                       │
+│     │           │            │   │                       │
+│  ┌──▼───────────▼────────────▼───┐                       │
+│  │  rag_agent / sql_agent /      │  parallel via Send    │
+│  │  conversation_agent           │                       │
+│  │  (try/except → failed result) │                       │
+│  └──────────────┬────────────────┘                       │
+│                 │ agent_results (operator.add reducer)   │
+│          ┌──────▼──────┐                                 │
+│          │ synthesise  │  hybrid: 1 LLM call             │
+│          │             │  single: pass-through           │
+│          └──────┬──────┘                                 │
+│                 │                                        │
+│          ┌──────▼──────┐                                 │
+│          │ escalate    │  EscalationChecker (fire-and-   │
+│          │             │  forget email + handoff summary)│
+│          └──────┬──────┘                                 │
+│                 │                                        │
+│                END                                       │
 └──────────────────────────────────────────────────────────┘
-          │ answer (or db_answer)
-          ▼
+                           │
+                           ▼
 ┌──────────────────────────────────────────────────────────┐
-│  Output                    CLI          Streamlit         │
-│  ┌──────────────────────────────────────────────────┐     │
-│  │ - Final answer text    print( )    st.markdown( )│     │
-│  │ - Logs (12 latest)     print( )    sidebar       │     │
-│  │ - Vega-Lite chart      N/A         st.vega_lite  │     │
-│  │ - Debug info           print( )    st.expander   │     │
-│  └──────────────────────────────────────────────────┘     │
+│  Output: CLI / Streamlit UI                              │
+│  - Final answer text                                     │
+│  - Logs (progressive thinking)                           │
+│  - Vega-Lite chart (if SQL result)                       │
+│  - Debug info (query_type, issup, isuse, agent_count)    │
+│  - Escalation info (reason, handoff_summary)             │
 └──────────────────────────────────────────────────────────┘
 ```
 
-## Graph Flows
+## Agent Subgraphs
 
-### Document Path
-1. `classify_question` → `"retrieve"` → `rag_pipeline` (compiled subgraph)
-2. Subgraph: `decide_retrieval` → `retrieve` → `is_relevant` (×N) → `generate_from_context` → `check_support` → `check_usefulness` (loops if not useful, up to 10 retries)
+### RAG Agent (app/agents/rag_agent.py → app/agents/graph/rag_subgraph.py)
 
-### Database Path
-1. `classify_question` → `"rewrite_sql_query"` → `rewrite_sql_query` (optional refinement for vague queries)
-2. `generate_sql` → `execute_sql` (with auto-retry on error) → `visualize_sql` (chart spec) → `summarize_sql` (NL answer)
+```
+START → decide_retrieval
+         │
+         ├─(no retrieval)→ generate_direct → END
+         │
+         └─(retrieve)→ retrieve → is_relevant
+                                        │
+                   ┌─(relevant docs)─────┘
+                   ▼
+         generate_from_context → is_sup
+                                   │
+                   ├─(fully_supported)→ is_use
+                   │                      │
+                   │                      ├─(useful)→ END
+                   │                      └─(not_useful)→ rewrite_question → retrieve
+                   │
+                   └─(not supported)→ revise_answer → is_sup  (max 5 retries)
+```
 
-### Hybrid Path
-1. `classify_question` → `"hybrid"` → `decompose_question` (LLM splits into sub-questions)
-2. `route_sub_questions` uses `Send()` to fan out to `run_rag_sub` / `run_sql_sub` in parallel
-3. `synthesise_hybrid` merges all sub-results into a single answer
+- Self-RAG pattern: IsSUP (grounding check) → Revise loop, IsUSE (usefulness check) → Rewrite loop
+- `MAX_RETRIES = 5` (is_sup/revise), `MAX_REWRITE_TRIES = 3` (is_use/rewrite)
+- Case-insensitive comparison in routers (`"fully_supported"`, `"useful"`)
+- Structured outputs with safe defaults on LLM failure
+
+### SQL Agent (app/agents/sql_agent.py → app/agents/graph/sql_nodes.py)
+
+```
+START → rewrite_sql_query → generate_sql → execute_sql
+                                               │
+                    ┌──────────────────────────┘
+                    │
+              ┌─(success)──→ visualize_sql → summarize_sql → END
+              │
+              ├─(syntax error, retry_count < 3)──→ generate_sql (retry with error context)
+              │
+              ├─(validation error)──→ visualize_sql (with db_error) → END
+              │
+              └─(connection error)──→ visualize_sql (with db_error) → END
+```
+
+- `SELECT`-only validation prevents DDL/DML
+- Error classification: `SQLValidationError`, `SQLSyntaxError` (retryable), `SQLConnectionError` (not retryable)
+- `original_question` preserved for summarizer (user's literal question, not refined query)
+- Retry as graph edges (not hidden Python loop) — visible in graph trace
+
+### Conversation Agent (app/agents/conversation_agent.py)
+
+Single LLM call, no subgraph. Handles greetings, emotions, small talk.
 
 ## State Fields
 
-| Field | Type | Purpose |
-|---|---|---|
-| `question` | `str` | Input question |
-| `query_type` | `"document" | "database" | "hybrid"` | Routed type |
-| `sub_questions` | `List[dict]` | Decomposed sub-questions |
-| `sub_results` | `Sequence[tuple[str, str]]` | (id, answer) pairs from parallel execution |
-| `visualization_spec` | `dict | None` | Vega-Lite bar chart spec |
-| `sql_query` | `str` | Generated SQL |
-| `sql_result` | `str` | JSON result rows |
-| `db_answer` | `str` | NL answer from SQL |
-| `answer` | `str` | NL answer from RAG |
-| `logs` | `list[str]` | Progressive thinking log entries |
-| `docs` | `List[Document]` | Retrieved documents |
-| `relevant_docs` | `List[Document]` | Filtered relevant docs |
-| `issup` | `"fully_supported" | "partially_supported" | "no_support"` | Support verdict |
-| `isuse` | `"useful" | "not_useful"` | Usefulness verdict |
+### SupervisorState
+| Field | Type | Reducer | Purpose |
+|---|---|---|---|
+| `request_id` | `str` | — | Request tracking |
+| `conversation_id` | `str` | — | Used as `thread_id` for checkpointer |
+| `question` | `str` | — | Current question (may be overridden per sub-question) |
+| `original_question` | `str` | — | User's literal input |
+| `chat_history` | `list[dict]` | — | Conversation context |
+| `execution_plan` | `ExecutionPlan?` | — | Agent routing plan |
+| `sub_questions` | `list[dict]` | — | Decomposed sub-questions |
+| `reclassified_query_type` | `str` | — | Fallback classification for non-decomposable hybrid |
+| `agent_results` | `list[AgentResult]` | `operator.add` | Accumulates parallel agent results |
+| `final_answer` | `str` | — | Synthesized answer |
+| `logs` | `list[str]` | `operator.add` | Progressive thinking log |
+| `visualization_spec` | `dict?` | — | Vega-Lite chart spec |
+| `escalated` | `bool` | — | Whether escalation fired |
+| `escalation_reason` | `str` | — | Escalation reason |
+| `handoff_summary` | `str` | — | Human handoff summary |
+
+## Key Design Decisions
+
+- **LangGraph checkpointer (SqliteSaver)** — Multi-turn state continuity via `thread_id`; no manual Redis memory round-trip
+- **`Send` for parallel fan-out** — One `Send` per agent or per decomposed sub-question; `agent_results` uses `operator.add` reducer for fan-in
+- **Hybrid re-classification** — If decomposition yields no sub-questions, a second LLM classification call picks a single dominant agent
+- **Agent error containment** — `try/except` around `agent.invoke`; failed agents return `AgentResult(success=False)`; synthesise works with remaining successes
+- **Escalation as graph node** — `escalate` node runs after `synthesise`; fire-and-forget email + handoff summary
+- **SQL retry as graph edges** — `execute_sql →(conditional)→ generate_sql` cycle; retry visible in graph trace
+- **`SELECT`-only validation** — Rejects non-SELECT/WITH and multi-statement SQL before execution
+- **Error classification** — `SQLSyntaxError` (retryable) vs `SQLConnectionError` (not retryable) vs `SQLValidationError` (not retryable)
+- **Structured outputs with safe defaults** — Every `with_structured_output` call passes a deterministic default factory; double-LLM-failure returns the default instead of crashing
+- **Case-insensitive routers** — `issup`/`isuse` comparisons use `.lower()` to handle LLM casing variations
+- **FAISS index persistence** — Index saved to `faiss_index/` on first build, loaded on subsequent startups
+- **Burst token streaming** — (Not yet wired; `TokenCollector` removed as dead code)
 
 ## Project Layout
 
@@ -96,33 +159,46 @@
 selfragmcp/
 ├── app/
 │   ├── __init__.py
-│   ├── config.py              — Settings (model, retriever params, DB)
-│   ├── state.py               — State TypedDict
-│   ├── models.py              — Pydantic models for structured output
-│   ├── prompts.py             — RAG prompt templates
-│   ├── llm.py                 — get_llm() / get_embeddings()
-│   ├── stream_events.py       — TokenCollector callback
-│   ├── vector_store.py        — FAISS index builder + retriever
-│   ├── db_agent.py            — Direct pymysql client for TiDB
+│   ├── api.py                     — FastAPI server entry point
+│   ├── config.py                  — Settings (model, retriever params, DB)
+│   ├── prompts.py                 — All prompt templates
+│   ├── chat_history.py            — format_chat_history helper
 │   ├── graph/
-│   │   ├── __init__.py
-│   │   ├── builder.py         — Graph assembly + compilation
-│   │   ├── nodes.py           — RAG pipeline nodes
-│   │   ├── rag_subgraph.py    — Compiled RAG subgraph for reuse
-│   │   └── sql_nodes.py       — SQL + hybrid + classify nodes
-│   └── prompts.py             — RAG + SQL + hybrid prompts
+│   │   └── builder.py             — Application container (wires everything)
+│   ├── models/
+│   │   ├── state.py               — TypedDicts (SupervisorState, RAGAgentState, etc.)
+│   │   ├── agent.py               — BaseAgent protocol, AgentResult
+│   │   ├── planning.py            — ExecutionPlan, QueryTypeDecision, etc.
+│   │   └── metadata.py            — RAGMetadata, SQLMetadata, decision schemas
+│   ├── orchestration/
+│   │   ├── planner.py             — Planner (classify → ExecutionPlan)
+│   │   ├── supervisor.py          — build_supervisor_graph
+│   │   └── registry.py            — AgentRegistry
+│   ├── agents/
+│   │   ├── rag_agent.py           — RAGAgent (wraps RAG subgraph)
+│   │   ├── sql_agent.py           — SQLAgent (wraps SQL subgraph)
+│   │   ├── conversation_agent.py  — ConversationAgent (single LLM call)
+│   │   └── graph/
+│   │       ├── nodes.py           — RAG node factories + routers
+│   │       ├── rag_subgraph.py    — build_rag_subgraph
+│   │       └── sql_nodes.py       — SQL node factories + build_sql_subgraph
+│   ├── infrastructure/
+│   │   ├── llm.py                 — LLMWithFallback, get_llm, get_embeddings
+│   │   ├── vector_store.py        — FAISS index (persisted) + retriever
+│   │   ├── db_agent.py            — pymysql client, SQL validation, error types
+│   │   └── email_alert.py         — SMTP escalation email
+│   ├── pipeline/
+│   │   ├── escalation.py          — EscalationChecker
+│   │   └── post_processing.py     — PostProcessingPipeline (security output check)
+│   └── services/
+│       ├── cache.py               — SemanticCache (FAISS + Redis)
+│       ├── memory.py              — RedisMemoryService / InMemoryMemoryService
+│       ├── security.py            — InputSanitizer, PIIDetector, OutputValidator
+│       ├── health.py              — HealthService
+│       └── monitoring.py          — MetricsCollector, JSONFormatter
 ├── ui/
-│   └── streamlit_app.py       — Streamlit UI
-├── documents/                 — PDF policy docs
-├── main.py                    — CLI entry point
-├── README.md
-└── SYSTEM_DESIGN.md
+│   └── streamlit_app.py           — Streamlit UI (HTTP client)
+├── documents/                     — PDF policy docs
+├── tests/                         — pytest tests
+└── faiss_index/                   — Persisted FAISS index (gitignored)
 ```
-
-## Key Design Decisions
-
-- **Direct pymysql over MCP** — Lower latency, no npm dependency, no standalone server process
-- **Compiled RAG subgraph** — Enables clean parallel execution for hybrid questions without duplicating node logic
-- **`Send` for hybrid fan-out** — LangGraph's `Send` enables parallel sub-graph execution with automatic fan-in via `operator.add`
-- **Burst token streaming** — Tokens arrive at superstep boundaries (not continuous), but threading-free and simple
-- **Error recovery in SQL** — Failed queries auto-retry with refined SQL using the error message as context

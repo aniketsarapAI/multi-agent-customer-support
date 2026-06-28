@@ -116,7 +116,14 @@ class TestApiStructure:
 
     def test_response_model_on_chat(self):
         tree = self._parse_api()
-        assert self._has_decorator(tree, "chat", "limit"), "response_model should be on /chat"
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "chat":
+                for d in node.decorator_list:
+                    if isinstance(d, ast.Call) and hasattr(d.func, "attr") and d.func.attr == "post":
+                        kw_names = {kw.arg for kw in d.keywords if kw.arg is not None}
+                        assert "response_model" in kw_names, "response_model should be on post decorator"
+                        return
+        pytest.fail("chat function with post decorator not found")
 
 
 class TestApiResponseModels:

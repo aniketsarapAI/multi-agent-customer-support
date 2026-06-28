@@ -1,4 +1,4 @@
-from app.security import InputSanitizer, PIIDetector, OutputValidator, SecurityPipeline
+from app.services.security import InputSanitizer, PIIDetector, OutputValidator, SecurityPipeline
 
 
 class TestInputSanitizer:

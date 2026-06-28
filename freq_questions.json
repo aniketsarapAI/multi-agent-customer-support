@@ -1,0 +1,54 @@
+[
+  {
+    "question": "What is your refund policy?",
+    "answer": "You can return items within 30 days of purchase. Items must be unused and in original packaging. Refunds are processed within 5-7 business days after we receive the return. Shipping costs are non-refundable."
+  },
+  {
+    "question": "How do I return an item?",
+    "answer": "To return an item, contact our support team within 30 days of purchase. We'll provide a return label. Pack the item securely in its original packaging, attach the label, and drop it off at any shipping partner location."
+  },
+  {
+    "question": "What is your shipping policy?",
+    "answer": "We offer free shipping on orders over $50. Standard delivery takes 5-7 business days. Express shipping (2-3 business days) is available for an additional fee. International shipping takes 10-14 business days."
+  },
+  {
+    "question": "Do you ship internationally?",
+    "answer": "Yes, we ship to over 40 countries worldwide. International delivery takes 10-14 business days. Customs fees and import duties may apply and are the responsibility of the customer."
+  },
+  {
+    "question": "How do I reset my password?",
+    "answer": "Click the 'Forgot Password' link on the login page. Enter your registered email address, and we'll send you a password reset link. The link expires after 24 hours."
+  },
+  {
+    "question": "What is your privacy policy?",
+    "answer": "We take your privacy seriously. We collect only the data needed to process orders and improve our service. We never sell your personal information to third parties. For full details, please read our Privacy Policy document."
+  },
+  {
+    "question": "How can I contact customer support?",
+    "answer": "You can reach us via email at hello@bloomly.co. Our support team is available Monday through Friday, 9 AM to 6 PM. We typically reply within 4 hours during business hours."
+  },
+  {
+    "question": "What is your contact email?",
+    "answer": "You can contact us at hello@bloomly.co. We reply within 4 hours during business days."
+  },
+  {
+    "question": "How do I track my order?",
+    "answer": "Once your order ships, you'll receive a tracking number via email. You can use this number on our website's tracking page or directly on the carrier's website to monitor your delivery."
+  },
+  {
+    "question": "What payment methods do you accept?",
+    "answer": "We accept Visa, Mastercard, American Express, PayPal, and Apple Pay. All payments are processed securely through encrypted connections."
+  },
+  {
+    "question": "Are your products sustainably sourced?",
+    "answer": "We are committed to sustainability. Over 70% of our products are sourced from certified sustainable suppliers. We regularly audit our supply chain to ensure ethical practices."
+  },
+  {
+    "question": "What are your terms and conditions?",
+    "answer": "Our terms and conditions cover order processing, payment terms, shipping, returns, and liability. By placing an order, you agree to our terms. The full document is available on our website."
+  },
+  {
+    "question": "How do I create an account?",
+    "answer": "Click the 'Sign Up' button on our website. Enter your name, email address, and a secure password. You'll receive a confirmation email to verify your account."
+  }
+]

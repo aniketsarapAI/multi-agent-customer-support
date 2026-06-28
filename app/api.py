@@ -10,9 +10,8 @@ from pydantic import BaseModel, Field
 
 from app.graph.builder import Application
 from app.models.state import SupervisorState
-from app.models.planning import ExecutionPlan
 from app.models.metadata import SQLMetadata
-from app.monitoring import get_logger, RequestTimer
+from app.services.monitoring import get_logger, RequestTimer
 
 logger = get_logger("api")
 
@@ -164,14 +163,17 @@ def chat(request: Request, req: ChatRequest):
             processing_time_ms=0,
         )
 
-    # ── Plan ──
+    # ── Load conversation memory ──
     request_id = str(uuid4())
     conversation_id = req.conversation_id or str(uuid4())
-    intent, execution_plan = _app.planner.run(cleaned_question, req.chat_history)
+    saved_state = _app.memory.load(conversation_id)
+    saved_history = saved_state.get("chat_history", [])
+    # Prefer the longer history (handles client-side truncation)
+    merged_history = req.chat_history if len(req.chat_history) >= len(saved_history) else saved_history
 
     logger.info(
-        "Planner result",
-        extra={"extra_data": {"request_id": request_id, "intent": intent.category, "plan": execution_plan.agents}},
+        "Processing request",
+        extra={"extra_data": {"request_id": request_id, "question": cleaned_question[:50]}},
     )
 
     # ── Execute supervisor graph ──
@@ -180,12 +182,16 @@ def chat(request: Request, req: ChatRequest):
         "conversation_id": conversation_id,
         "question": cleaned_question,
         "original_question": question,
-        "chat_history": req.chat_history,
-        "execution_plan": execution_plan,
-        "agent_results": [],
+        "chat_history": merged_history,
+        "messages": [],
+        "supervisor_decision": None,
         "final_answer": "",
         "logs": [],
         "visualization_spec": None,
+        "escalated": False,
+        "escalation_reason": "",
+        "handoff_summary": "",
+        "iteration_count": 0,
     }
 
     timer.__enter__()
@@ -193,7 +199,8 @@ def chat(request: Request, req: ChatRequest):
 
     try:
         result = None
-        for output in _app.supervisor.stream(initial_state, stream_mode="values"):
+        config = {"configurable": {"thread_id": conversation_id}}
+        for output in _app.supervisor.stream(initial_state, config=config, stream_mode="values"):
             result = output
             new_logs = output.get("logs", [])
             if isinstance(new_logs, list):
@@ -205,48 +212,47 @@ def chat(request: Request, req: ChatRequest):
             raise HTTPException(status_code=500, detail="Graph returned no result")
 
         final_answer = result.get("final_answer", "No answer found.")
-        agent_results = result.get("agent_results", [])
 
-        # ── Post-processing ──
+        # ── Security output check (escalation is handled in-graph) ──
+        safe_answer, output_warnings = _app.security.check_output(final_answer)
+        security_notes.extend(output_warnings)
+
+        # ── Read escalation results from graph state ──
+        escalated = result.get("escalated", False)
+        escalation_reason = result.get("escalation_reason", "")
+        handoff_summary = result.get("handoff_summary", "")
+        visualization_spec = result.get("visualization_spec")
+
+        # ── Build debug info from messages ──
+        messages = result.get("messages", [])
+        tools_used = sorted(set(m["tool"] for m in messages if m.get("role") == "tool"))
+        query_type = "+".join(tools_used) if tools_used else "direct"
+
         issup = ""
         isuse = ""
-        for ar in agent_results:
-            if hasattr(ar, "metadata") and ar.metadata:
-                issup = getattr(ar.metadata, "issup", "")
-                isuse = getattr(ar.metadata, "isuse", "")
-                break
-
-        pipeline_result = _app.post_processing.run(
-            final_answer=final_answer,
-            question=question,
-            chat_history=req.chat_history,
-            issup=issup,
-            isuse=isuse,
-        )
-
-        # ── Build debug info ──
-        query_type = "+".join(execution_plan.agents) if execution_plan.needs_synthesis else execution_plan.agents[0]
+        for msg in messages:
+            metadata = msg.get("metadata", {})
+            if metadata.get("issup"):
+                issup = metadata["issup"]
+            if metadata.get("isuse"):
+                isuse = metadata["isuse"]
 
         sql_result_str = ""
-        visualization_spec = None
-        for ar in agent_results:
-            if isinstance(ar.metadata, SQLMetadata):
-                if ar.metadata.sql_result:
-                    sql_result_str = ar.metadata.sql_result
-                if ar.metadata.visualization_spec:
-                    visualization_spec = ar.metadata.visualization_spec
+        for msg in messages:
+            metadata = msg.get("metadata", {})
+            if metadata.get("sql_result"):
+                sql_result_str = metadata["sql_result"]
 
         debug = {
             "query_type": query_type,
-            "intent": intent.category,
-            "execution_plan": execution_plan.agents,
+            "tools_used": tools_used,
             "issup": issup,
             "isuse": isuse,
-            "agent_count": len(agent_results),
+            "agent_count": len(tools_used),
         }
 
         # ── Cache ──
-        _app.cache.set(cleaned_question, pipeline_result.answer)
+        _app.cache.set(cleaned_question, safe_answer)
 
         timer.__exit__(None, None, None)
         _app.metrics.record_request(
@@ -256,16 +262,16 @@ def chat(request: Request, req: ChatRequest):
         )
 
         return ChatResponse(
-            answer=pipeline_result.answer,
+            answer=safe_answer,
             query_type=query_type,
             logs=collected_logs,
             debug=debug,
             visualization_spec=visualization_spec,
-            escalated=pipeline_result.escalated,
-            escalation_reason=pipeline_result.escalation_reason,
-            handoff_summary=pipeline_result.handoff_summary,
+            escalated=escalated,
+            escalation_reason=escalation_reason,
+            handoff_summary=handoff_summary,
             sql_result=sql_result_str,
-            security_notes=security_notes + pipeline_result.security_notes,
+            security_notes=security_notes,
             cached=False,
             processing_time_ms=round(timer.elapsed_ms, 2),
         )

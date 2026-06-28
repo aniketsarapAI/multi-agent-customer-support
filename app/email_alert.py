@@ -1,1 +1,0 @@
-from app.infrastructure.email_alert import send_escalation_email

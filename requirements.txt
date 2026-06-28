@@ -3,6 +3,7 @@ langchain-openai>=0.2.0
 langchain-text-splitters>=0.3.0
 langchain-core>=0.3.0
 langgraph>=0.2.0
+langgraph-checkpoint-sqlite>=2.0.0
 faiss-cpu>=1.8.0
 pydantic>=2.0
 pydantic-settings>=2.0
@@ -16,3 +17,4 @@ uvicorn>=0.30.0
 langchain-google-genai>=2.0.0
 slowapi>=0.1.9
 pymysql
+redis[hiredis]

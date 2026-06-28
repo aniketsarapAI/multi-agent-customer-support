@@ -18,6 +18,44 @@ Table: leads_closed (columns: mql_id TEXT, seller_id TEXT, sdr_id TEXT, sr_id TE
 """
 
 
+class SQLValidationError(Exception):
+    """Raised when SQL fails read-only validation (e.g. non-SELECT, multi-statement)."""
+
+
+class SQLSyntaxError(Exception):
+    """Raised when the database rejects the SQL as malformed (retryable via regeneration)."""
+
+
+class SQLConnectionError(Exception):
+    """Raised on connection/server issues (not retryable via SQL regeneration)."""
+
+
+# pymysql error codes that indicate connection/server issues, not SQL syntax problems.
+_CONNECTION_ERROR_CODES = {1042, 1045, 1080, 1081, 1082, 1083, 1084, 1090, 1091,
+                            1129, 1130, 1153, 1154, 1155, 1156, 1157, 1158, 1159,
+                            1184, 1213, 1226, 1243, 1814, 1864, 1881, 1893, 1894,
+                            2000, 2001, 2002, 2003, 2005, 2006, 2007, 2009, 2013,
+                            2020, 2026, 2027, 2055, 2059, 2061}
+
+
+def validate_select_only(sql: str) -> None:
+    """Reject multi-statement SQL and non-read-only statements.
+
+    Allows only SELECT and WITH (CTE) as leading keywords. Disables stacked
+    queries by rejecting any semicolon in the body.
+    """
+    stripped = sql.strip().rstrip(";").strip()
+    if not stripped:
+        raise SQLValidationError("Empty SQL query.")
+    if ";" in stripped:
+        raise SQLValidationError("Multiple statements are not allowed.")
+    first_word = stripped.split(None, 1)[0].upper()
+    if first_word not in ("SELECT", "WITH"):
+        raise SQLValidationError(
+            f"Only read-only SELECT/WITH queries are allowed; got '{first_word}'."
+        )
+
+
 def get_connection():
     return pymysql.connect(
         host=settings.mysql_host,
@@ -33,6 +71,7 @@ def get_connection():
 
 
 def execute_sql(sql: str) -> list[dict]:
+    validate_select_only(sql)
     conn = get_connection()
     try:
         with conn.cursor() as cursor:
@@ -40,5 +79,17 @@ def execute_sql(sql: str) -> list[dict]:
             rows = cursor.fetchall()
         conn.commit()
         return rows
+    except pymysql.err.OperationalError as e:
+        code = e.args[0] if e.args else 0
+        if code in _CONNECTION_ERROR_CODES:
+            raise SQLConnectionError(str(e)) from e
+        # Other OperationalErrors (e.g. unknown column) are syntax-shaped.
+        raise SQLSyntaxError(str(e)) from e
+    except pymysql.err.ProgrammingError as e:
+        raise SQLSyntaxError(str(e)) from e
+    except pymysql.err.InternalError as e:
+        raise SQLSyntaxError(str(e)) from e
+    except pymysql.err.NotSupportedError as e:
+        raise SQLSyntaxError(str(e)) from e
     finally:
         conn.close()

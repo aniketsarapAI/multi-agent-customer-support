@@ -24,12 +24,18 @@ from app.config import MAX_RETRIES, MAX_REWRITE_TRIES
 from app.chat_history import format_chat_history
 
 
-def make_decide_retrieval(llm):
+def make_decide_retrieval(grader_llm):
     def decide_retrieval(state: RAGAgentState):
         logs = ["🔍 decide_retrieval: checking if retrieval is needed..."]
-        structured = llm.with_structured_output(RetrieveDecision)
+        chat_history = format_chat_history(state.get("chat_history", []))
+        structured = grader_llm.with_structured_output(
+            RetrieveDecision, default=lambda: RetrieveDecision(should_retrieve=True)
+        )
         decision: RetrieveDecision = structured.invoke(
-            decide_retrieval_prompt.format_messages(question=state["question"])
+            decide_retrieval_prompt.format_messages(
+                question=state["question"],
+                chat_history=chat_history,
+            )
         )
         logs.append(f"✅ decide_retrieval: need_retrieval={decision.should_retrieve}")
         return {"need_retrieval": decision.should_retrieve, "logs": logs}
@@ -72,7 +78,9 @@ def make_retrieve(retriever):
 def make_is_relevant(llm):
     def is_relevant(state: RAGAgentState):
         logs = ["🔍 is_relevant: filtering documents by relevance..."]
-        structured = llm.with_structured_output(RelevanceDecision)
+        structured = llm.with_structured_output(
+            RelevanceDecision, default=lambda: RelevanceDecision(is_relevant=True)
+        )
         relevant_docs: list[Document] = []
         for i, doc in enumerate(state.get("docs", [])):
             decision: RelevanceDecision = structured.invoke(
@@ -122,7 +130,9 @@ def make_is_sup(llm):
     def is_sup(state: RAGAgentState):
         retry = state.get("retries", 0)
         logs = [f"🔍 is_sup (attempt {retry + 1}): verifying answer support..."]
-        structured = llm.with_structured_output(IsSUPDecision)
+        structured = llm.with_structured_output(
+            IsSUPDecision, default=lambda: IsSUPDecision(issup="partially_supported", evidence=[])
+        )
         decision: IsSUPDecision = structured.invoke(
             issup_prompt.format_messages(
                 question=state["question"],
@@ -136,7 +146,7 @@ def make_is_sup(llm):
 
 
 def route_after_issup(state: RAGAgentState) -> Literal["accept_answer", "revise_answer"]:
-    if state.get("issup") == "fully_supported":
+    if state.get("issup", "").lower() == "fully_supported":
         return "accept_answer"
     if state.get("retries", 0) >= MAX_RETRIES:
         return "accept_answer"
@@ -170,7 +180,9 @@ def make_revise_answer(llm):
 def make_is_use(llm):
     def is_use(state: RAGAgentState):
         logs = ["🔍 is_use: checking answer usefulness..."]
-        structured = llm.with_structured_output(IsUSEDecision)
+        structured = llm.with_structured_output(
+            IsUSEDecision, default=lambda: IsUSEDecision(isuse="not_useful", reason="Usefulness grader failed.")
+        )
         decision: IsUSEDecision = structured.invoke(
             isuse_prompt.format_messages(
                 question=state["question"],
@@ -183,7 +195,7 @@ def make_is_use(llm):
 
 
 def route_after_isuse(state: RAGAgentState) -> Literal["END", "rewrite_question", "no_answer_found"]:
-    if state.get("isuse") == "useful":
+    if state.get("isuse", "").lower() == "useful":
         return "END"
     if state.get("rewrite_tries", 0) >= MAX_REWRITE_TRIES:
         return "no_answer_found"
@@ -195,7 +207,9 @@ def make_rewrite_question(llm):
         rewrite_try = state.get("rewrite_tries", 0) + 1
         logs = [f"🔍 rewrite_question (attempt {rewrite_try}): rewriting for better retrieval..."]
         chat_history = format_chat_history(state.get("chat_history", []))
-        structured = llm.with_structured_output(RewriteDecision)
+        structured = llm.with_structured_output(
+            RewriteDecision, default=lambda: RewriteDecision(retrieval_query="")
+        )
         decision: RewriteDecision = structured.invoke(
             rewrite_for_retrieval_prompt.format_messages(
                 question=state["question"],
@@ -204,9 +218,10 @@ def make_rewrite_question(llm):
                 answer=state.get("answer", ""),
             )
         )
-        logs.append(f"✅ rewrite_question: → {decision.retrieval_query}")
+        new_query = decision.retrieval_query or state["question"]
+        logs.append(f"✅ rewrite_question: → {new_query}")
         return {
-            "retrieval_query": decision.retrieval_query,
+            "retrieval_query": new_query,
             "rewrite_tries": rewrite_try,
             "docs": [],
             "relevant_docs": [],

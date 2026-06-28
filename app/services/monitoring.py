@@ -1,7 +1,7 @@
+import bisect
 import json
 import logging
 import time
-from collections import defaultdict
 
 
 class JSONFormatter(logging.Formatter):
@@ -38,6 +38,7 @@ def get_logger(name: str) -> logging.Logger:
 class MetricsCollector:
     def __init__(self):
         self._latencies: list[float] = []
+        self._sorted_latencies: list[float] = []
         self._total_requests = 0
         self._total_errors = 0
         self._cache_hits = 0
@@ -55,8 +56,10 @@ class MetricsCollector:
             self._cache_misses += 1
         if latency_ms > 0:
             self._latencies.append(latency_ms)
+            bisect.insort(self._sorted_latencies, latency_ms)
             if len(self._latencies) > 1000:
                 self._latencies = self._latencies[-1000:]
+                self._sorted_latencies = sorted(self._latencies)
         self._tokens_input += tokens_input
         self._tokens_output += tokens_output
 
@@ -72,7 +75,8 @@ class MetricsCollector:
             "total_errors": errors,
             "error_rate": round(errors / total, 3) if total > 0 else 0.0,
             "avg_latency_ms": round(avg_latency, 2),
-            "p50_latency_ms": round(sorted(self._latencies)[n // 2], 2) if n > 0 else 0.0,
+            "p50_latency_ms": round(self._sorted_latencies[n // 2], 2) if n > 0 else 0.0,
+            "p95_latency_ms": round(self._sorted_latencies[int(n * 0.95)], 2) if n > 0 else 0.0,
             "cache_hits": self._cache_hits,
             "cache_misses": self._cache_misses,
             "cache_hit_rate": round(self._cache_hits / cache_total, 3) if cache_total > 0 else 0.0,

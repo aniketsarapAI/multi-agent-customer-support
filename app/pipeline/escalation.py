@@ -1,7 +1,7 @@
 import logging
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from app.prompts import escalation_check_prompt, handoff_summary_prompt
 from app.chat_history import format_chat_history
@@ -29,7 +29,9 @@ class EscalationChecker:
 
     def check(self, question: str, answer: str, chat_history: list[dict], issup: str = "", isuse: str = "") -> tuple[bool, str, str]:
         chat_str = format_chat_history(chat_history)
-        structured = self._llm.with_structured_output(EscalationDecision)
+        structured = self._llm.with_structured_output(
+            EscalationDecision, default=lambda: EscalationDecision(escalate=False, reason="none")
+        )
         decision: EscalationDecision = structured.invoke(
             escalation_check_prompt.format_messages(
                 chat_history=chat_str,

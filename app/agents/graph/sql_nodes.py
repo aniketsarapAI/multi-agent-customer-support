@@ -10,7 +10,13 @@ from app.prompts import (
     sql_retry_prompt,
     summarize_sql_prompt,
 )
-from app.infrastructure.db_agent import execute_sql, TABLE_SCHEMA
+from app.infrastructure.db_agent import (
+    execute_sql,
+    TABLE_SCHEMA,
+    SQLValidationError,
+    SQLSyntaxError,
+    SQLConnectionError,
+)
 from app.chat_history import format_chat_history
 
 
@@ -18,22 +24,31 @@ def make_rewrite_sql_query(llm):
     def rewrite_sql_query(state: SQLAgentState):
         logs = ["🔍 rewrite_sql_query: refining vague query..."]
         chat_history = format_chat_history(state.get("chat_history", []))
-        structured = llm.with_structured_output(SQLRewriteDecision)
+        structured = llm.with_structured_output(
+            SQLRewriteDecision, default=lambda: SQLRewriteDecision(refined_query="")
+        )
         decision: SQLRewriteDecision = structured.invoke(
             sql_rewrite_prompt.format_messages(
                 question=state["question"],
                 chat_history=chat_history,
             )
         )
-        logs.append(f"✅ rewrite_sql_query: → {decision.refined_query[:80]}...")
-        return {"question": decision.refined_query, "logs": logs}
+        refined = decision.refined_query or state["question"]
+        logs.append(f"✅ rewrite_sql_query: → {refined[:80]}...")
+        return {"question": refined, "logs": logs}
     return rewrite_sql_query
 
 
 def make_generate_sql(llm):
-    def generate_sql(state: SQLAgentState, error: str = "", bad_sql: str = ""):
-        structured = llm.with_structured_output(SQLQueryDecision)
+    def generate_sql(state: SQLAgentState):
+        structured = llm.with_structured_output(
+            SQLQueryDecision, default=lambda: SQLQueryDecision(sql_query="")
+        )
+        logs = ["🔍 generate_sql: SQL generated"]
+        error = state.get("db_error", "")
+        bad_sql = state.get("sql_query", "")
         if error and bad_sql:
+            logs = [f"🔍 generate_sql: retrying after error — {error[:80]}"]
             decision: SQLQueryDecision = structured.invoke(
                 sql_retry_prompt.format_messages(
                     question=state["question"],
@@ -51,49 +66,39 @@ def make_generate_sql(llm):
                     chat_history=chat_history,
                 )
             )
-        return {"sql_query": decision.sql_query, "logs": ["🔍 generate_sql: SQL generated"]}
+        return {"sql_query": decision.sql_query, "logs": logs}
     return generate_sql
 
 
 def make_execute_sql_node(llm):
-    _generate_sql = make_generate_sql(llm)
-
     def execute_sql_node(state: SQLAgentState):
         logs = ["🔍 execute_sql_node: running query..."]
         sql = state.get("sql_query", "")
         if not sql:
             logs.append("❌ execute_sql_node: no SQL query")
-            return {"db_error": "No SQL query generated.", "answer": "Failed to generate a valid SQL query.", "logs": logs}
+            return {
+                "db_error": "No SQL query generated.",
+                "answer": "Failed to generate a valid SQL query.",
+                "issup": "no_support",
+                "isuse": "not_useful",
+                "use_reason": "SQL generation failed.",
+                "logs": logs,
+            }
 
-        max_attempts = 3
-        error_history = []
-        current_sql = sql
-
-        for attempt in range(max_attempts):
-            try:
-                rows = execute_sql(current_sql)
-                result_str = json.dumps(rows, default=str) if rows else "No results found."
-                msg = f"✅ execute_sql_node: {len(rows)} row(s) returned" if rows else "✅ execute_sql_node: no results"
-                logs.append(msg)
-                if attempt > 0:
-                    logs.append(f"✅ execute_sql_node: succeeded on retry #{attempt}")
-                return {"sql_query": current_sql, "sql_result": result_str, "logs": logs}
-            except Exception as e:
-                error_msg = str(e)
-                error_history.append(f"Attempt #{attempt + 1}: {error_msg}")
-                if attempt < max_attempts - 1:
-                    logs.append(f"⚠️ execute_sql_node: attempt #{attempt + 1} failed — {error_msg}")
-                    context = "\n".join(error_history)
-                    retry = _generate_sql(state, error=context, bad_sql=current_sql)
-                    new_sql = retry.get("sql_query", "")
-                    if not new_sql or new_sql == current_sql:
-                        logs.append(f"❌ execute_sql_node: retry #{attempt + 1} produced no improvement")
-                    current_sql = new_sql or current_sql
-                else:
-                    logs.append(f"❌ execute_sql_node: all {max_attempts} attempts failed — {error_msg}")
-                    return {"db_error": error_msg, "answer": f"Error executing query: {error_msg}", "logs": logs}
-
-        return {"db_error": error_history[-1] if error_history else "Unknown error", "answer": "Failed to execute query after retries.", "logs": logs}
+        try:
+            rows = execute_sql(sql)
+            result_str = json.dumps(rows, default=str) if rows else "No results found."
+            logs.append(f"✅ execute_sql_node: {len(rows)} row(s) returned" if rows else "✅ execute_sql_node: no results")
+            return {"sql_query": sql, "sql_result": result_str, "db_error": "", "logs": logs}
+        except SQLValidationError as e:
+            return {"db_error": str(e), "logs": logs + [f"❌ Validation failed: {e}"]}
+        except SQLConnectionError as e:
+            return {"db_error": str(e), "logs": logs + [f"❌ Connection error: {e}"]}
+        except SQLSyntaxError as e:
+            logs.append(f"⚠️ execute_sql_node: syntax error — {e}")
+            return {"db_error": str(e), "logs": logs, "retry_count": state.get("retry_count", 0) + 1}
+        except Exception as e:
+            return {"db_error": str(e), "logs": logs + [f"❌ Unexpected error: {e}"]}
     return execute_sql_node
 
 
@@ -161,7 +166,7 @@ def make_summarize_sql_result(llm):
 
         out = llm.invoke(
             summarize_sql_prompt.format_messages(
-                question=state["question"],
+                question=state.get("original_question") or state.get("question", ""),
                 sql_query=state.get("sql_query", ""),
                 sql_result=state.get("sql_result", "No results."),
             )
@@ -170,9 +175,6 @@ def make_summarize_sql_result(llm):
         return {
             "answer": out.content,
             "logs": logs,
-            "issup": "fully_supported",
-            "isuse": "useful",
-            "use_reason": "Answer generated from SQL query results.",
         }
     return summarize_sql_result
 
@@ -189,7 +191,17 @@ def build_sql_subgraph(llm):
     g.add_edge(START, "rewrite_sql_query")
     g.add_edge("rewrite_sql_query", "generate_sql")
     g.add_edge("generate_sql", "execute_sql")
-    g.add_edge("execute_sql", "visualize_sql")
+
+    def route_after_execute(state: SQLAgentState):
+        if state.get("db_error") and state.get("retry_count", 0) < 3:
+            return "generate_sql"
+        return "visualize_sql"
+
+    g.add_conditional_edges(
+        "execute_sql",
+        route_after_execute,
+        {"generate_sql": "generate_sql", "visualize_sql": "visualize_sql"},
+    )
     g.add_edge("visualize_sql", "summarize_sql")
     g.add_edge("summarize_sql", END)
 

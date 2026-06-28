@@ -7,10 +7,10 @@ from app.agents.graph.rag_subgraph import build_rag_subgraph
 
 
 class RAGAgent(BaseAgent):
-    def __init__(self, llm, retriever):
+    def __init__(self, llm, retriever, grader_llm=None):
         self._llm = llm
         self._retriever = retriever
-        self._subgraph = build_rag_subgraph(llm, retriever)
+        self._subgraph = build_rag_subgraph(llm, retriever, grader_llm)
 
     def invoke(self, question: str, chat_history: list[dict], request_id: str) -> AgentResult:
         start = time.perf_counter()
@@ -18,6 +18,7 @@ class RAGAgent(BaseAgent):
         initial_state: RAGAgentState = {
             "request_id": request_id,
             "question": question,
+            "chat_history": chat_history,
             "answer": "",
             "retrieval_query": "",
             "rewrite_tries": 0,
