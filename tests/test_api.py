@@ -130,7 +130,6 @@ class TestApiResponseModels:
     """Validate Pydantic model schemas by constructing them directly."""
 
     def test_chat_response_has_all_fields(self):
-        from pydantic import BaseModel
         import importlib.util
         spec = importlib.util.spec_from_file_location("api", "app/api.py")
         mod = importlib.util.module_from_spec(spec)

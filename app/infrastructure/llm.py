@@ -42,25 +42,8 @@ class LLMWithFallback:
                     content="I'm sorry, I'm having trouble processing your request right now. Please try again in a moment."
                 )
 
-    def ainvoke(self, messages, **kwargs):
-        try:
-            return self._primary.ainvoke(messages, **kwargs)
-        except Exception as e:
-            logger.warning("Primary LLM failed (async), trying fallback", extra={"extra_data": {"error": str(e)[:200]}})
-            try:
-                return self._fallback.ainvoke(messages, **kwargs)
-            except Exception:
-                logger.error("Both primary and fallback LLM failed (async)")
-                return AIMessage(
-                    content="I'm sorry, I'm having trouble processing your request right now. Please try again in a moment."
-                )
-
     def with_structured_output(self, schema, default=None, **kwargs):
         return _StructuredWithFallback(self._primary, self._fallback, schema, kwargs, default)
-
-    @property
-    def ChatOpenAI(self):
-        return self._primary
 
 
 class _StructuredWithFallback:
@@ -110,10 +93,6 @@ class GraderLLM:
 
     def with_structured_output(self, schema, default=None, **kwargs):
         return _StructuredWithFallback(self._primary, self._fallback, schema, kwargs, default)
-
-    @property
-    def ChatOpenAI(self):
-        return self._primary
 
 
 @lru_cache(maxsize=1)

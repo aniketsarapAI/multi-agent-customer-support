@@ -10,7 +10,6 @@ from pydantic import BaseModel, Field
 
 from app.graph.builder import Application
 from app.models.state import SupervisorState
-from app.models.metadata import SQLMetadata
 from app.services.monitoring import get_logger, RequestTimer
 
 logger = get_logger("api")

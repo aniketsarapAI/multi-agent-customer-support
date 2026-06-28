@@ -15,7 +15,6 @@ from app.services.memory import InMemoryMemoryService, RedisMemoryService
 from app.services.health import HealthService
 from app.services.monitoring import MetricsCollector
 from app.pipeline.escalation import EscalationChecker
-from app.pipeline.post_processing import PostProcessingPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +67,6 @@ class Application:
             self.registry, self.llm, self.escalation, checkpointer=self.checkpointer
         )
         self.supervisor.recursion_limit = RECURSION_LIMIT
-
-        # Pipeline (security output check still used in api.py)
-        self.post_processing = PostProcessingPipeline(self.security, self.escalation)
 
         # Health
         self.health_service = HealthService(

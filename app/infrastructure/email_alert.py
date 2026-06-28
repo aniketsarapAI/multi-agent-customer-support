@@ -17,14 +17,10 @@ def send_escalation_email(
     sql_queries_executed: list[str] | None = None,
     message_count: int = 0,
 ) -> None:
-    if not settings.email_enabled:
-        logger.info("Email alerts disabled — set ENABLE_EMAIL_ALERTS=true to enable")
-        return
-
-    sender = settings.email_sender
-    recipient = settings.email_recipient
-    password = settings.email_password
-    if not all([sender, recipient, password]):
+    sender = settings.gmail_user
+    password = settings.gmail_app_password
+    recipient = settings.support_email
+    if not all([sender, password, recipient]):
         logger.warning("Email settings incomplete — skipping escalation email")
         return
 

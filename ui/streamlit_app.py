@@ -54,42 +54,34 @@ def _format_step(log: str) -> str | None:
     if "✅ summarize_sql_result: done" in log:
         return "SQL results summarized"
 
-    if "✅ synthesise_hybrid: done" in log:
-        return "Hybrid answers merged"
-
-    m = re.search(r"✅ decompose_question:\s*→\s*(\d+) sub-question", log)
-    if m:
-        return f"Question decomposed into **{m.group(1)}** sub-questions"
-
     if "✅ generate_direct: done" in log:
         return "Answered directly"
 
-    m = re.search(r"✅ run_rag_sub\((\w+)\): done", log)
-    if m:
-        return f"RAG sub-query **{m.group(1)}** complete"
-
-    m = re.search(r"✅ run_sql_sub\((\w+)\): done", log)
-    if m:
-        return f"SQL sub-query **{m.group(1)}** complete"
-
-    if "⚠️ no_answer_found" in log:
+    if "no_answer_found" in log:
         return "No relevant documents found"
 
     if "✅ visualize_sql_result: chart generated" in log:
         return "Chart generated from results"
 
-    m = re.search(r"❌ execute_sql_node: all \d+ attempts failed", log)
+    m = re.search(r"execute_sql_node: all \d+ attempts failed", log)
     if m:
         return "SQL execution failed after retries"
 
-    if "✅ generate_handoff: done" in log:
-        return "Handoff summary generated"
+    m = re.search(r"reAct: \u2192 (\w+)", log)
+    if m:
+        action = m.group(1)
+        if action == "parallel":
+            return "Calling tools in parallel"
+        return "Calling single tool"
 
-    m = re.search(r"\s*escalate=(\S+)\s+reason=(\S+)", log)
+    if "reAct: answering directly" in log:
+        return "Answering directly"
+
+    m = re.search(r"reAct: escalation=(True|False), reason=(\S+)", log)
     if m:
         if m.group(1) == "False":
             return "Escalation check: not required"
-        return f"Escalation required: **{m.group(2).upper()}**"
+        return "Escalation required"
 
     # Fallback: show raw completion logs
     if log.startswith("✅") or log.startswith("⚠️") or log.startswith("❌"):
